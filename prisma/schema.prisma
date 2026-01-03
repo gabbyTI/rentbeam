@@ -1,0 +1,136 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  cognitoId String?  @unique
+  email     String   @unique
+  name      String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  landlordAccount   LandlordAccount?
+  tenantMemberships TenantMembership[]
+
+  @@map("users")
+}
+
+model LandlordAccount {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payoutsEnabled  Boolean  @default(false)
+  stripeAccountId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  properties Property[]
+
+  @@map("landlord_accounts")
+}
+
+model Property {
+  id         String          @id @default(uuid())
+  landlordId String
+  landlord   LandlordAccount @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  name       String
+  address    String
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  units Unit[]
+
+  @@index([landlordId])
+  @@map("properties")
+}
+
+model Unit {
+  id              String   @id @default(uuid())
+  propertyId      String
+  property        Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  name            String
+  rentAmount      Decimal  @db.Decimal(10, 2)
+  dueDay          Int
+  gracePeriodDays Int      @default(5)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  tenantMemberships TenantMembership[]
+
+  @@index([propertyId])
+  @@map("units")
+}
+
+model TenantMembership {
+  id         String @id @default(uuid())
+  userId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  unitId     String
+  unit       Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  landlordId String
+
+  rentAmount  Decimal   @db.Decimal(10, 2)
+  moveInDate  DateTime
+  moveOutDate DateTime?
+
+  inviteStatus InviteStatus @default(PENDING)
+  inviteToken  String?      @unique
+
+  autopayEnabled     Boolean @default(false)
+  stripeCustomerId   String?
+  paymentMethodLabel String?
+
+  status    MembershipStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  payments Payment[]
+
+  @@index([userId])
+  @@index([unitId])
+  @@index([landlordId])
+  @@index([inviteToken])
+  @@map("tenant_memberships")
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Payment {
+  id                 String           @id @default(uuid())
+  tenantMembershipId String
+  tenantMembership   TenantMembership @relation(fields: [tenantMembershipId], references: [id], onDelete: Cascade)
+
+  amount    Decimal       @db.Decimal(10, 2)
+  method    PaymentMethod
+  date      DateTime
+  month     String // Format: "2025-01"
+  note      String?
+  createdAt DateTime      @default(now())
+
+  @@index([tenantMembershipId])
+  @@index([month])
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  AUTOPAY
+  MANUAL
+}
