@@ -9,6 +9,7 @@ import unitRoutes from './routes/units.js';
 import tenantRoutes from './routes/tenants.js';
 import paymentRoutes from './routes/payments.js';
 import inviteRoutes from './routes/invites.js';
+import stripeRoutes from './routes/stripe.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import prisma from './lib/prisma.js';
 import logger from './lib/logger.js';
@@ -45,6 +46,7 @@ app.use('/api/units', unitRoutes);
 app.use('/api/tenants', tenantRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/invites', inviteRoutes);
+app.use('/api/stripe/connect', stripeRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);
