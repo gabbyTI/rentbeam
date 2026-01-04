@@ -6,6 +6,7 @@ import { ForbiddenError, ValidationError, NotFoundError } from '../lib/errors.js
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
+import { emailService } from '../services/email.js';
 import logger from '../lib/logger.js';
 
 const router = Router();
@@ -102,13 +103,17 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     }
   });
 
-  // TODO: Send invite email
-  const inviteLink = `${process.env.FRONTEND_URL}/invite/${inviteToken}`;
-  logger.info({ inviteLink, email }, '📧 Invite link generated');
+  // Send invite email
+  try {
+    await emailService.sendTenantInvite(email, user.name, inviteToken);
+  } catch (error) {
+    logger.error({ error, email }, 'Failed to send invite email, but tenant was created');
+    // Don't fail the request if email fails - tenant is still created
+  }
 
   res.status(201).json(apiResponse({
     membership,
-    inviteLink
+    inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`
   }, 'Tenant created successfully'));
 }));
 
