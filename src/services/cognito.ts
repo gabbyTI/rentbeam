@@ -8,6 +8,7 @@ import {
   ConfirmForgotPasswordCommand,
   ChangePasswordCommand,
   GlobalSignOutCommand,
+  ResendConfirmationCodeCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -158,4 +159,13 @@ export const cognitoService = {
       return false;
     }
   },
+
+  async resendConfirmationCode(email: string): Promise<void> {
+    const command = new ResendConfirmationCodeCommand({
+      ClientId: CLIENT_ID,
+      Username: email,
+    });
+
+    await client.send(command);
+  }
 };

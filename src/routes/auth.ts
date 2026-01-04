@@ -264,4 +264,19 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
   }));
 }));
 
+router.post(
+  '/resend-verification',
+  catchAsync(async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+      throw new ValidationError('Email is required');
+    }
+
+    await cognitoService.resendConfirmationCode(email);
+
+    res.json(apiResponse(null, 'Verification email sent'));
+  })
+);
+
 export default router;
