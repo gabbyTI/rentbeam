@@ -64,7 +64,25 @@ router.post('/login', catchAsync(async (req, res) => {
   }
 
   // Authenticate with Cognito
-  const authResult = await cognitoService.login(email, password);
+  let authResult;
+  try {
+    authResult = await cognitoService.login(email, password);
+  } catch (error: any) {
+    // Handle specific Cognito errors
+    if (error.name === 'NotAuthorizedException') {
+      if (error.message.includes('disabled')) {
+        throw new UnauthorizedError('This account has been disabled');
+      }
+      throw new UnauthorizedError('Invalid email or password');
+    }
+    if (error.name === 'UserNotFoundException') {
+      throw new UnauthorizedError('Invalid email or password');
+    }
+    if (error.name === 'UserNotConfirmedException') {
+      throw new UnauthorizedError('Please verify your email before logging in');
+    }
+    throw error;
+  }
 
   if (!authResult?.IdToken) {
     throw new UnauthorizedError('Login failed');
