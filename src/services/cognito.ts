@@ -9,6 +9,8 @@ import {
   ChangePasswordCommand,
   GlobalSignOutCommand,
   ResendConfirmationCodeCommand,
+  SignUpCommand,
+  ConfirmSignUpCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -23,34 +25,24 @@ const CLIENT_SECRET = process.env.COGNITO_CLIENT_SECRET!;
 export const cognitoService = {
   // Create a new Cognito user (for landlord signup and tenant invite accept)
   async createUser(email: string, password: string, name: string) {
-    // Create user
-    const createCommand = new AdminCreateUserCommand({
-      UserPoolId: USER_POOL_ID,
+    // Use SignUpCommand to create user that requires email verification
+    const signUpCommand = new SignUpCommand({
+      ClientId: CLIENT_ID,
       Username: email,
+      Password: password,
+      SecretHash: this.generateSecretHash(email),
       UserAttributes: [
         { Name: 'email', Value: email },
-        { Name: 'email_verified', Value: 'true' },
         { Name: 'name', Value: name },
       ],
-      MessageAction: 'SUPPRESS', // Don't send welcome email
     });
 
-    const createResult = await client.send(createCommand);
-    const cognitoId = createResult.User?.Username;
+    const result = await client.send(signUpCommand);
+    const cognitoId = result.UserSub;
 
     if (!cognitoId) {
       throw new Error('Failed to create Cognito user');
     }
-
-    // Set permanent password
-    const passwordCommand = new AdminSetUserPasswordCommand({
-      UserPoolId: USER_POOL_ID,
-      Username: email,
-      Password: password,
-      Permanent: true,
-    });
-
-    await client.send(passwordCommand);
 
     return cognitoId;
   },
@@ -164,6 +156,19 @@ export const cognitoService = {
     const command = new ResendConfirmationCodeCommand({
       ClientId: CLIENT_ID,
       Username: email,
+      SecretHash: this.generateSecretHash(email),
+    });
+
+    await client.send(command);
+  },
+
+  // Confirm email with verification code
+  async confirmEmail(email: string, code: string): Promise<void> {
+    const command = new ConfirmSignUpCommand({
+      ClientId: CLIENT_ID,
+      Username: email,
+      ConfirmationCode: code,
+      SecretHash: this.generateSecretHash(email),
     });
 
     await client.send(command);

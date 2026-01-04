@@ -275,7 +275,23 @@ router.post(
 
     await cognitoService.resendConfirmationCode(email);
 
-    res.json(apiResponse(null, 'Verification email sent'));
+    res.json(apiResponse(null, 'Verification code sent'));
+  })
+);
+
+// POST /api/auth/confirm-email - Confirm email with verification code
+router.post(
+  '/confirm-email',
+  catchAsync(async (req, res) => {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      throw new ValidationError('Email and verification code are required');
+    }
+
+    await cognitoService.confirmEmail(email, code);
+
+    res.json(apiResponse(null, 'Email verified successfully'));
   })
 );
 
