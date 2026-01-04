@@ -27,8 +27,21 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
     throw new ConflictError('User already exists');
   }
 
-  // Create Cognito user
-  const cognitoId = await cognitoService.createUser(email, password, name);
+  // Create Cognito user (handle if already exists)
+  let cognitoId: string;
+  try {
+    cognitoId = await cognitoService.createUser(email, password, name);
+  } catch (error: any) {
+    if (error.name === 'UsernameExistsException') {
+      // Cognito user exists but database user doesn't - this can happen after DB reset
+      // Delete the Cognito user and recreate to ensure consistency
+      logger.warn({ email }, 'Cognito user exists without database record, deleting and recreating');
+      await cognitoService.deleteUser(email);
+      cognitoId = await cognitoService.createUser(email, password, name);
+    } else {
+      throw error;
+    }
+  }
 
   // Create user in database
   const user = await prisma.user.create({

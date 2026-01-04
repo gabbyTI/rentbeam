@@ -7,6 +7,7 @@ import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
 import { emailService } from '../services/email.js';
+import { cognitoService } from '../services/cognito.js';
 import logger from '../lib/logger.js';
 
 const router = Router();
@@ -234,6 +235,109 @@ router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
   }
 
   res.json(apiResponse(null, 'Invite resent successfully'));
+}));
+
+// POST /api/tenants/:id/move-out (move out tenant)
+router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+  const { moveOutDate, note } = req.body;
+
+  if (!moveOutDate) {
+    throw new ValidationError('Move-out date is required');
+  }
+
+  // Fetch tenant membership
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id },
+    include: {
+      user: true,
+      unit: {
+        include: {
+          property: true
+        }
+      }
+    }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant not found');
+  }
+
+  // Verify landlord ownership
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+
+  if (!landlord || membership.landlordId !== landlord.id) {
+    throw new ForbiddenError('Not authorized to move out this tenant');
+  }
+
+  // Validate tenant is ACTIVE
+  if (membership.status === 'INACTIVE') {
+    // Idempotent - already moved out
+    return res.json(apiResponse({
+      alreadyMovedOut: true,
+      moveOutDate: membership.moveOutDate,
+      movedOutAt: membership.movedOutAt,
+    }, 'Tenant already moved out'));
+  }
+
+  // Validate moveOutDate >= moveInDate
+  const parsedMoveOutDate = new Date(moveOutDate);
+  if (parsedMoveOutDate < membership.moveInDate) {
+    throw new ValidationError('Move-out date cannot be before move-in date');
+  }
+
+  // Check for unpaid rent
+  const currentMonth = new Date().toISOString().slice(0, 7); // "2026-01"
+  const unpaidPayment = await prisma.payment.findFirst({
+    where: {
+      tenantMembershipId: id,
+      month: currentMonth,
+    }
+  });
+
+  const hasOutstandingBalance = !unpaidPayment;
+
+  // Update membership: set INACTIVE, disable autopay, set move-out dates, null invite token
+  const updatedMembership = await prisma.tenantMembership.update({
+    where: { id },
+    data: {
+      status: 'INACTIVE',
+      moveOutDate: parsedMoveOutDate,
+      movedOutAt: new Date(),
+      autopayEnabled: false,
+      autopayDisabledAt: new Date(),
+      autopayDisableReason: 'MOVE_OUT',
+      inviteToken: null, // Security: remove invite token
+    },
+    include: {
+      user: true,
+      unit: {
+        include: {
+          property: true
+        }
+      }
+    }
+  });
+
+  // Delete Cognito user if exists
+  if (membership.user.cognitoId) {
+    try {
+      await cognitoService.deleteUser(membership.user.email);
+      logger.info({ email: membership.user.email, cognitoId: membership.user.cognitoId }, 'Deleted Cognito user on move-out');
+    } catch (error) {
+      logger.error({ error, email: membership.user.email }, 'Failed to delete Cognito user on move-out');
+      // Don't fail the move-out if Cognito deletion fails
+    }
+  }
+
+  res.json(apiResponse({
+    membership: updatedMembership,
+    outstandingBalance: hasOutstandingBalance,
+    unpaidPeriods: hasOutstandingBalance ? [currentMonth] : [],
+  }, 'Tenant moved out successfully'));
 }));
 
 // GET /api/tenants/:id (get single tenant membership details)

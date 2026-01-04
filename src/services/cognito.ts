@@ -11,6 +11,7 @@ import {
   ResendConfirmationCodeCommand,
   SignUpCommand,
   ConfirmSignUpCommand,
+  AdminDeleteUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -203,6 +204,16 @@ export const cognitoService = {
       Username: email,
       ConfirmationCode: code,
       SecretHash: this.generateSecretHash(email),
+    });
+
+    await client.send(command);
+  },
+
+  // Delete user from Cognito (for move-out/account deletion)
+  async deleteUser(email: string): Promise<void> {
+    const command = new AdminDeleteUserCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: email,
     });
 
     await client.send(command);

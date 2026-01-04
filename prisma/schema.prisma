@@ -82,13 +82,16 @@ model TenantMembership {
   rentAmount  Decimal   @db.Decimal(10, 2)
   moveInDate  DateTime
   moveOutDate DateTime?
+  movedOutAt  DateTime?
 
   inviteStatus InviteStatus @default(PENDING)
   inviteToken  String?      @unique
 
-  autopayEnabled     Boolean @default(false)
-  stripeCustomerId   String?
-  paymentMethodLabel String?
+  autopayEnabled       Boolean   @default(false)
+  autopayDisabledAt    DateTime?
+  autopayDisableReason String?
+  stripeCustomerId     String?
+  paymentMethodLabel   String?
 
   status    MembershipStatus @default(ACTIVE)
   createdAt DateTime         @default(now())
