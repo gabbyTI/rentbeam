@@ -26,7 +26,14 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 
   // Parse pagination and sort
   const { page, limit, skip } = parsePagination(req.query);
-  const { orderBy } = parseSort(req.query, '-createdAt');
+  const { orderBy: rawOrderBy } = parseSort(req.query, '-createdAt');
+  
+  // Validate and filter orderBy fields
+  const allowedFields = ['createdAt', 'updatedAt', 'moveInDate', 'rentAmount'];
+  const orderBy = rawOrderBy.filter(order => {
+    const field = Object.keys(order)[0];
+    return allowedFields.includes(field);
+  });
 
   const where = { landlordId: landlord.id };
 
@@ -86,14 +93,18 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Generate invite token
   const inviteToken = crypto.randomBytes(32).toString('hex');
 
+  // Parse and validate data
+  const parsedRentAmount = typeof rentAmount === 'string' ? parseFloat(rentAmount) : rentAmount;
+  const parsedMoveInDate = moveInDate ? new Date(moveInDate) : new Date();
+
   // Create tenant membership
   const membership = await prisma.tenantMembership.create({
     data: {
       userId: tenantUser.id,
       unitId,
       landlordId: landlord.id,
-      rentAmount,
-      moveInDate: moveInDate || new Date(),
+      rentAmount: parsedRentAmount,
+      moveInDate: parsedMoveInDate,
       inviteToken,
       inviteStatus: 'PENDING'
     },
@@ -115,6 +126,60 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     membership,
     inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`
   }, 'Tenant created successfully'));
+}));
+
+// POST /api/tenants/:id/resend-invite
+router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id },
+    include: { user: true }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant not found');
+  }
+
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+
+  if (!landlord || membership.landlordId !== landlord.id) {
+    throw new ForbiddenError('Not authorized');
+  }
+
+  // Validation checks
+  if (membership.inviteStatus === 'ACCEPTED') {
+    throw new ValidationError('Invite already accepted');
+  }
+
+  if (membership.status !== 'ACTIVE') {
+    throw new ValidationError('Cannot resend invite for inactive tenant');
+  }
+
+  if (membership.user.cognitoId) {
+    throw new ValidationError('User has already registered');
+  }
+
+  // Generate new invite token
+  const inviteToken = crypto.randomBytes(32).toString('hex');
+  
+  await prisma.tenantMembership.update({
+    where: { id },
+    data: { inviteToken }
+  });
+
+  // Send invite email
+  try {
+    await emailService.sendTenantInvite(membership.user.email, user.name, inviteToken);
+  } catch (error) {
+    logger.error({ error, email: membership.user.email }, 'Failed to resend invite email');
+    throw new Error('Failed to send invite email');
+  }
+
+  res.json(apiResponse(null, 'Invite resent successfully'));
 }));
 
 // PATCH /api/tenants/:id
