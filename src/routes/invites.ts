@@ -18,7 +18,15 @@ router.get('/:token', catchAsync(async (req, res) => {
       user: true,
       unit: {
         include: {
-          property: true
+          property: {
+            include: {
+              landlord: {
+                include: {
+                  user: true
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -35,14 +43,15 @@ router.get('/:token', catchAsync(async (req, res) => {
   res.json(apiResponse({
     email: membership.user.email,
     name: membership.user.name,
+    landlordName: membership.unit.property.landlord.user.name,
     unit: {
       name: membership.unit.name,
-      rentAmount: membership.rentAmount.toString(),
     },
     property: {
       name: membership.unit.property.name,
       address: membership.unit.property.address,
     },
+    rentAmount: parseFloat(membership.rentAmount.toString()),
     dueDay: membership.unit.dueDay,
   }));
 }));
@@ -89,8 +98,8 @@ router.post('/:token/accept', catchAsync(async (req, res) => {
       note: 'You can now login with your existing credentials'
     }, 'Invite accepted successfully'));
   } else {
-    // Create Cognito account
-    const cognitoId = await cognitoService.createUser(
+    // Create Cognito account with pre-verified email (tenant proved ownership via invite link)
+    const cognitoId = await cognitoService.createTenantUser(
       user.email,
       password,
       user.name

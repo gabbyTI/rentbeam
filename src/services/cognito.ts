@@ -47,6 +47,40 @@ export const cognitoService = {
     return cognitoId;
   },
 
+  // Create tenant user with pre-verified email (for invite acceptance)
+  async createTenantUser(email: string, password: string, name: string) {
+    // Use AdminCreateUserCommand with pre-verified email
+    const createUserCommand = new AdminCreateUserCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: email,
+      MessageAction: 'SUPPRESS', // Don't send welcome email
+      UserAttributes: [
+        { Name: 'email', Value: email },
+        { Name: 'email_verified', Value: 'true' }, // Mark email as verified
+        { Name: 'name', Value: name },
+      ],
+    });
+
+    const result = await client.send(createUserCommand);
+    const cognitoId = result.User?.Attributes?.find(attr => attr.Name === 'sub')?.Value;
+
+    if (!cognitoId) {
+      throw new Error('Failed to create tenant user');
+    }
+
+    // Set permanent password
+    const setPasswordCommand = new AdminSetUserPasswordCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: email,
+      Password: password,
+      Permanent: true,
+    });
+
+    await client.send(setPasswordCommand);
+
+    return cognitoId;
+  },
+
   // Login user (called from backend for testing, but frontend should call Cognito directly)
   async login(email: string, password: string) {
     const command = new AdminInitiateAuthCommand({

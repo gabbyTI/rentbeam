@@ -66,7 +66,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { email, name, phone, unitId, rentAmount, moveInDate } = req.body;
 
-  if (!email || !name || !unitId || !rentAmount) {
+  if (!email || !name || !unitId || rentAmount === undefined || rentAmount === null) {
     throw new ValidationError('Missing required fields');
   }
 
@@ -78,10 +78,65 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     throw new ForbiddenError('Not authorized');
   }
 
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    throw new ValidationError('Invalid email format');
+  }
+
+  // Validate rent amount
+  const parsedRentAmount = typeof rentAmount === 'string' ? parseFloat(rentAmount) : rentAmount;
+  if (isNaN(parsedRentAmount) || parsedRentAmount <= 0) {
+    throw new ValidationError('Rent amount must be a positive number');
+  }
+
+  // Validate unit exists and landlord owns it
+  const unit = await prisma.unit.findUnique({
+    where: { id: unitId },
+    include: {
+      property: true
+    }
+  });
+
+  if (!unit) {
+    throw new NotFoundError('Unit not found');
+  }
+
+  if (unit.property.landlordId !== landlord.id) {
+    throw new ForbiddenError('You do not own this unit');
+  }
+
+  // Check if unit already has an active tenant
+  const existingActiveTenant = await prisma.tenantMembership.findFirst({
+    where: {
+      unitId,
+      status: 'ACTIVE'
+    }
+  });
+
+  if (existingActiveTenant) {
+    throw new ValidationError('This unit already has an active tenant');
+  }
+
   // Check if user exists
   let tenantUser = await prisma.user.findUnique({
     where: { email }
   });
+
+  // Check for duplicate active membership if user exists
+  if (tenantUser) {
+    const existingMembership = await prisma.tenantMembership.findFirst({
+      where: {
+        userId: tenantUser.id,
+        landlordId: landlord.id,
+        status: 'ACTIVE'
+      }
+    });
+
+    if (existingMembership) {
+      throw new ValidationError('This tenant already has an active membership with you');
+    }
+  }
 
   // If user doesn't exist, create placeholder
   if (!tenantUser) {
@@ -94,7 +149,6 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const inviteToken = crypto.randomBytes(32).toString('hex');
 
   // Parse and validate data
-  const parsedRentAmount = typeof rentAmount === 'string' ? parseFloat(rentAmount) : rentAmount;
   const parsedMoveInDate = moveInDate ? new Date(moveInDate) : new Date();
 
   // Create tenant membership
@@ -180,6 +234,50 @@ router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
   }
 
   res.json(apiResponse(null, 'Invite resent successfully'));
+}));
+
+// GET /api/tenants/:id (get single tenant membership details)
+router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id },
+    include: {
+      user: true,
+      unit: {
+        include: {
+          property: {
+            include: {
+              landlord: {
+                include: {
+                  user: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant membership not found');
+  }
+
+  // Check authorization: landlord owns this tenant OR user is the tenant
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+
+  const isLandlord = landlord && membership.landlordId === landlord.id;
+  const isTenant = membership.userId === user.id;
+
+  if (!isLandlord && !isTenant) {
+    throw new ForbiddenError('Not authorized to view this tenant');
+  }
+
+  res.json(apiResponse(membership));
 }));
 
 // PATCH /api/tenants/:id
