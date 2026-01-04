@@ -22,12 +22,24 @@ function formatUptime(seconds: number) {
 }
 
 router.get('/', catchAsync(async (req, res) => {
-  // Test database connection with a simple query
-  await prisma.$connect();
+  let dbStatus = 'connected';
+  
+  try {
+    // Fast database connection test with timeout
+    await Promise.race([
+      prisma.$queryRawUnsafe('SELECT 1'),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Health check timeout')), 2000)
+      )
+    ]);
+  } catch (error) {
+    logger.error({ err: error }, 'Database health check failed');
+    dbStatus = 'disconnected';
+  }
   
   res.json(apiResponse({
     timestamp: new Date().toISOString(),
-    database: 'connected',
+    database: dbStatus,
     uptime: formatUptime(process.uptime()),
   }));
 }));
