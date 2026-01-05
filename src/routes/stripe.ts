@@ -158,4 +158,213 @@ router.post(
   })
 );
 
+// ==================== TENANT PAYMENT ENDPOINTS ====================
+
+/**
+ * POST /api/stripe/customers
+ * Create Stripe Customer for tenant
+ */
+router.post(
+  '/customers',
+  authenticate,
+  catchAsync(async (req: AuthRequest, res) => {
+    const userId = req.user!.id;
+
+    // Get tenant membership
+    const membership = await prisma.tenantMembership.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      include: { user: true },
+    });
+
+    if (!membership) {
+      throw new NotFoundError('Active tenant membership not found');
+    }
+
+    // Check if customer already exists
+    if (membership.stripeCustomerId) {
+      res.json(
+        apiResponse({
+          customerId: membership.stripeCustomerId,
+          alreadyExists: true,
+        })
+      );
+      return;
+    }
+
+    // Create Stripe customer
+    const customer = await stripeService.createCustomer({
+      email: membership.user.email,
+      name: membership.user.name,
+    });
+
+    // Save customer ID
+    await prisma.tenantMembership.update({
+      where: { id: membership.id },
+      data: { stripeCustomerId: customer.id },
+    });
+
+    res.json(
+      apiResponse({
+        customerId: customer.id,
+        alreadyExists: false,
+      })
+    );
+  })
+);
+
+/**
+ * POST /api/stripe/setup-intent
+ * Create SetupIntent to save payment method
+ */
+router.post(
+  '/setup-intent',
+  authenticate,
+  catchAsync(async (req: AuthRequest, res) => {
+    const userId = req.user!.id;
+
+    // Get tenant membership
+    const membership = await prisma.tenantMembership.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      include: { user: true },
+    });
+
+    if (!membership) {
+      throw new NotFoundError('Active tenant membership not found');
+    }
+
+    // Ensure customer exists
+    let customerId = membership.stripeCustomerId;
+    if (!customerId) {
+      const customer = await stripeService.createCustomer({
+        email: membership.user.email,
+        name: membership.user.name,
+      });
+      customerId = customer.id;
+
+      await prisma.tenantMembership.update({
+        where: { id: membership.id },
+        data: { stripeCustomerId: customerId },
+      });
+    }
+
+    // Create SetupIntent
+    const setupIntent = await stripeService.createSetupIntent(customerId);
+
+    res.json(
+      apiResponse({
+        clientSecret: setupIntent.client_secret,
+        customerId,
+      })
+    );
+  })
+);
+
+/**
+ * POST /api/stripe/payment-intent
+ * Create PaymentIntent to charge saved payment method
+ */
+router.post(
+  '/payment-intent',
+  authenticate,
+  catchAsync(async (req: AuthRequest, res) => {
+    const userId = req.user!.id;
+
+    // Get tenant membership with unit details
+    const membership = await prisma.tenantMembership.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      include: { unit: true },
+    });
+
+    if (!membership) {
+      throw new NotFoundError('Active tenant membership not found');
+    }
+
+    if (!membership.stripeCustomerId || !membership.defaultPaymentMethodId) {
+      throw new BadRequestError('Payment method not set up');
+    }
+
+    // Calculate fees
+    const rentAmount = parseFloat(membership.unit.rentAmount.toString());
+    const fees = stripeService.calculateProcessingFee(rentAmount);
+
+    // Generate month
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    // Check for duplicate payment
+    const existingPayment = await prisma.payment.findFirst({
+      where: {
+        tenantMembershipId: membership.id,
+        month,
+      },
+    });
+
+    if (existingPayment) {
+      throw new BadRequestError(`Payment already recorded for ${month}`);
+    }
+
+    // Create PaymentIntent
+    const paymentIntent = await stripeService.createPaymentIntent({
+      amount: fees.totalAmount,
+      customerId: membership.stripeCustomerId,
+      paymentMethodId: membership.defaultPaymentMethodId,
+      metadata: {
+        tenantMembershipId: membership.id,
+        month,
+        rentAmount: fees.rentAmount.toString(),
+        processingFee: fees.processingFee.toString(),
+      },
+    });
+
+    res.json(
+      apiResponse({
+        clientSecret: paymentIntent.client_secret,
+        paymentIntentId: paymentIntent.id,
+        ...fees,
+      })
+    );
+  })
+);
+
+/**
+ * DELETE /api/stripe/payment-method
+ * Remove saved payment method
+ */
+router.delete(
+  '/payment-method',
+  authenticate,
+  catchAsync(async (req: AuthRequest, res) => {
+    const userId = req.user!.id;
+
+    // Get tenant membership
+    const membership = await prisma.tenantMembership.findFirst({
+      where: { userId, status: 'ACTIVE' },
+    });
+
+    if (!membership) {
+      throw new NotFoundError('Active tenant membership not found');
+    }
+
+    if (!membership.defaultPaymentMethodId) {
+      throw new BadRequestError('No payment method to remove');
+    }
+
+    // Detach from Stripe
+    await stripeService.detachPaymentMethod(membership.defaultPaymentMethodId);
+
+    // Update database
+    await prisma.tenantMembership.update({
+      where: { id: membership.id },
+      data: {
+        defaultPaymentMethodId: null,
+        paymentMethodLabel: null,
+        autopayEnabled: false,
+        autopayConsentAt: null,
+      },
+    });
+
+    res.json(apiResponse({ success: true }));
+  })
+);
+
 export default router;

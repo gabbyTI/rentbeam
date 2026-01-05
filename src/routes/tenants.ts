@@ -448,4 +448,92 @@ router.post('/transfer', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse(newMembership, 'Tenant transferred successfully'));
 }));
 
+// PATCH /api/tenants/:id/autopay (toggle autopay)
+router.patch('/:id/autopay', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+  const { autopayEnabled } = req.body;
+
+  if (typeof autopayEnabled !== 'boolean') {
+    throw new ValidationError('autopayEnabled must be a boolean');
+  }
+
+  // Fetch tenant membership
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id },
+    include: {
+      user: true,
+      unit: {
+        include: {
+          property: true
+        }
+      }
+    }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant membership not found');
+  }
+
+  // Verify ownership (user is either the tenant or the landlord)
+  const isOwner = membership.userId === user.id;
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+  const isLandlord = landlord?.id === membership.landlordId;
+
+  if (!isOwner && !isLandlord) {
+    throw new ForbiddenError('Not authorized to modify this tenant membership');
+  }
+
+  // If enabling autopay, require payment method
+  if (autopayEnabled && !membership.defaultPaymentMethodId) {
+    throw new ValidationError('Cannot enable autopay without a payment method');
+  }
+
+  // Update autopay status
+  const updateData: any = {
+    autopayEnabled,
+  };
+
+  if (autopayEnabled) {
+    // Record consent timestamp when enabling
+    updateData.autopayConsentAt = new Date();
+    updateData.autopayDisabledAt = null;
+    updateData.autopayDisableReason = null;
+  } else {
+    // Record disabled timestamp when disabling
+    updateData.autopayDisabledAt = new Date();
+  }
+
+  const updatedMembership = await prisma.tenantMembership.update({
+    where: { id },
+    data: updateData,
+    include: {
+      user: true,
+      unit: {
+        include: {
+          property: {
+            include: {
+              landlord: {
+                include: {
+                  user: true
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  logger.info({ 
+    tenantMembershipId: id, 
+    autopayEnabled,
+    userId: user.id 
+  }, `Autopay ${autopayEnabled ? 'enabled' : 'disabled'}`);
+
+  res.json(apiResponse(updatedMembership, `Autopay ${autopayEnabled ? 'enabled' : 'disabled'} successfully`));
+}));
+
 export default router;

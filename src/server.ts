@@ -10,9 +10,12 @@ import tenantRoutes from './routes/tenants.js';
 import paymentRoutes from './routes/payments.js';
 import inviteRoutes from './routes/invites.js';
 import stripeRoutes from './routes/stripe.js';
+import webhookRoutes from './routes/webhooks.js';
+import cronRoutes from './routes/cron.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import prisma from './lib/prisma.js';
 import logger from './lib/logger.js';
+import { initializeScheduler } from './jobs/scheduler.js';
 
 // Initialize Express app
 const app = express();
@@ -35,6 +38,11 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true
 }));
+
+// Webhook routes BEFORE json middleware (needs raw body)
+app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoutes);
+
+// JSON middleware for all other routes
 app.use(express.json());
 app.use(pinoHttp({ logger }));
 
@@ -47,6 +55,8 @@ app.use('/api/tenants', tenantRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/stripe/connect', stripeRoutes);
+app.use('/api/stripe', stripeRoutes); // Add non-connect Stripe routes
+app.use('/api/cron', cronRoutes); // Cron endpoints
 
 // Error handler (must be last)
 app.use(errorHandler);
@@ -63,6 +73,9 @@ export async function startServer() {
     const server = app.listen(PORT, () => {
       logger.info(`Server running on http://localhost:${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      
+      // Initialize cron scheduler after server starts
+      initializeScheduler();
     });
 
     // Graceful shutdown handling

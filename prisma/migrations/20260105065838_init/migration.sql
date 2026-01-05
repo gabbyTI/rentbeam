@@ -5,7 +5,10 @@ CREATE TYPE "InviteStatus" AS ENUM ('PENDING', 'ACCEPTED');
 CREATE TYPE "MembershipStatus" AS ENUM ('ACTIVE', 'INACTIVE');
 
 -- CreateEnum
-CREATE TYPE "PaymentMethod" AS ENUM ('AUTOPAY', 'MANUAL');
+CREATE TYPE "PaymentMethod" AS ENUM ('CARD', 'MANUAL');
+
+-- CreateEnum
+CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'SUCCEEDED', 'FAILED');
 
 -- CreateTable
 CREATE TABLE "users" (
@@ -72,7 +75,9 @@ CREATE TABLE "tenant_memberships" (
     "autopayEnabled" BOOLEAN NOT NULL DEFAULT false,
     "autopayDisabledAt" TIMESTAMP(3),
     "autopayDisableReason" TEXT,
+    "autopayConsentAt" TIMESTAMP(3),
     "stripeCustomerId" TEXT,
+    "defaultPaymentMethodId" TEXT,
     "paymentMethodLabel" TEXT,
     "status" "MembershipStatus" NOT NULL DEFAULT 'ACTIVE',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -85,11 +90,17 @@ CREATE TABLE "tenant_memberships" (
 CREATE TABLE "payments" (
     "id" TEXT NOT NULL,
     "tenantMembershipId" TEXT NOT NULL,
+    "rentAmount" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "processingFee" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "platformFee" DECIMAL(10,2) NOT NULL DEFAULT 0,
+    "totalAmount" DECIMAL(10,2) NOT NULL DEFAULT 0,
     "amount" DECIMAL(10,2) NOT NULL,
     "method" "PaymentMethod" NOT NULL,
+    "status" "PaymentStatus" NOT NULL DEFAULT 'SUCCEEDED',
     "date" TIMESTAMP(3) NOT NULL,
     "month" TEXT NOT NULL,
     "note" TEXT,
+    "stripePaymentIntentId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "payments_pkey" PRIMARY KEY ("id")
@@ -130,6 +141,9 @@ CREATE INDEX "payments_tenantMembershipId_idx" ON "payments"("tenantMembershipId
 
 -- CreateIndex
 CREATE INDEX "payments_month_idx" ON "payments"("month");
+
+-- CreateIndex
+CREATE INDEX "payments_status_idx" ON "payments"("status");
 
 -- AddForeignKey
 ALTER TABLE "landlord_accounts" ADD CONSTRAINT "landlord_accounts_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;

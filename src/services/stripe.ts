@@ -125,6 +125,144 @@ class StripeService {
       throw error;
     }
   }
+
+  /**
+   * Calculate processing fee for tenant payment
+   */
+  calculateProcessingFee(rentAmount: number): {
+    rentAmount: number;
+    processingFee: number;
+    totalAmount: number;
+  } {
+    const percentageFee = rentAmount * 0.029; // 2.9%
+    const fixedFee = 0.30;
+    const processingFee = percentageFee + fixedFee;
+    const totalAmount = rentAmount + processingFee;
+
+    return {
+      rentAmount,
+      processingFee: Math.round(processingFee * 100) / 100, // Round to 2 decimals
+      totalAmount: Math.round(totalAmount * 100) / 100,
+    };
+  }
+
+  /**
+   * Create a Stripe Customer for a tenant
+   */
+  async createCustomer(params: {
+    email: string;
+    name: string;
+  }): Promise<Stripe.Customer> {
+    try {
+      const customer = await getStripeClient().customers.create({
+        email: params.email,
+        name: params.name,
+      });
+      return customer;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create a SetupIntent to save payment method
+   */
+  async createSetupIntent(customerId: string): Promise<Stripe.SetupIntent> {
+    try {
+      const setupIntent = await getStripeClient().setupIntents.create({
+        customer: customerId,
+        payment_method_types: ['card'],
+      });
+      return setupIntent;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create a PaymentIntent to charge saved payment method
+   */
+  async createPaymentIntent(params: {
+    amount: number; // Amount in cents or dollars based on context
+    currency?: string;
+    customerId: string;
+    paymentMethodId: string;
+    metadata?: Record<string, string>;
+    confirm?: boolean;
+    offSession?: boolean;
+  }): Promise<Stripe.PaymentIntent> {
+    try {
+      const paymentIntent = await getStripeClient().paymentIntents.create({
+        amount: params.amount, // Caller should provide cents
+        currency: params.currency || 'usd',
+        customer: params.customerId,
+        payment_method: params.paymentMethodId,
+        off_session: params.offSession !== undefined ? params.offSession : true,
+        confirm: params.confirm !== undefined ? params.confirm : true,
+        metadata: params.metadata || {},
+      });
+      return paymentIntent;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get payment method details
+   */
+  async getPaymentMethod(paymentMethodId: string): Promise<Stripe.PaymentMethod> {
+    try {
+      const paymentMethod = await getStripeClient().paymentMethods.retrieve(paymentMethodId);
+      return paymentMethod;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Detach payment method from customer
+   */
+  async detachPaymentMethod(paymentMethodId: string): Promise<Stripe.PaymentMethod> {
+    try {
+      const paymentMethod = await getStripeClient().paymentMethods.detach(paymentMethodId);
+      return paymentMethod;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Construct webhook event from raw body and signature
+   */
+  constructWebhookEvent(
+    payload: string | Buffer,
+    signature: string,
+    webhookSecret: string
+  ): Stripe.Event {
+    try {
+      return getStripeClient().webhooks.constructEvent(payload, signature, webhookSecret);
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Webhook signature verification failed: ${error.message}`);
+      }
+      throw error;
+    }
+  }
 }
 
 export const stripeService = new StripeService();
