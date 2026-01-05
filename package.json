@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "node --loader ts-node/esm --watch src/index.ts | npx pino-pretty",
+    "dev": "tsx watch src/index.ts | npx pino-pretty",
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "test": "prisma generate --schema=./tests/schema.test.prisma && jest --detectOpenHandles --forceExit",

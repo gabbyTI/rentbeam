@@ -51,7 +51,7 @@ router.get('/:token', catchAsync(async (req, res) => {
       name: membership.unit.property.name,
       address: membership.unit.property.address,
     },
-    rentAmount: parseFloat(membership.rentAmount.toString()),
+    rentAmount: parseFloat(membership.unit.rentAmount.toString()),
     dueDay: membership.unit.dueDay,
   }));
 }));

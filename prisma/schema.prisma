@@ -79,7 +79,6 @@ model TenantMembership {
   unit       Unit   @relation(fields: [unitId], references: [id], onDelete: Cascade)
   landlordId String
 
-  rentAmount  Decimal   @db.Decimal(10, 2)
   moveInDate  DateTime
   moveOutDate DateTime?
   movedOutAt  DateTime?

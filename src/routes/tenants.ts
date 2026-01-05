@@ -30,7 +30,7 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
   const { orderBy: rawOrderBy } = parseSort(req.query, '-createdAt');
   
   // Validate and filter orderBy fields
-  const allowedFields = ['createdAt', 'updatedAt', 'moveInDate', 'rentAmount'];
+  const allowedFields = ['createdAt', 'updatedAt', 'moveInDate'];
   const orderBy = rawOrderBy.filter(order => {
     const field = Object.keys(order)[0];
     return allowedFields.includes(field);
@@ -65,9 +65,9 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/tenants (create tenant + send invite)
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { email, name, phone, unitId, rentAmount, moveInDate } = req.body;
+  const { email, name, phone, unitId, moveInDate } = req.body;
 
-  if (!email || !name || !unitId || rentAmount === undefined || rentAmount === null) {
+  if (!email || !name || !unitId) {
     throw new ValidationError('Missing required fields');
   }
 
@@ -83,12 +83,6 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
     throw new ValidationError('Invalid email format');
-  }
-
-  // Validate rent amount
-  const parsedRentAmount = typeof rentAmount === 'string' ? parseFloat(rentAmount) : rentAmount;
-  if (isNaN(parsedRentAmount) || parsedRentAmount <= 0) {
-    throw new ValidationError('Rent amount must be a positive number');
   }
 
   // Validate unit exists and landlord owns it
@@ -158,7 +152,6 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
       userId: tenantUser.id,
       unitId,
       landlordId: landlord.id,
-      rentAmount: parsedRentAmount,
       moveInDate: parsedMoveInDate,
       inviteToken,
       inviteStatus: 'PENDING'
@@ -387,11 +380,11 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
 // PATCH /api/tenants/:id
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const { id } = req.params;
-  const { rentAmount, autopayEnabled, paymentMethodLabel } = req.body;
+  const { autopayEnabled, paymentMethodLabel } = req.body;
 
-  const updated = await prisma.tenantMembership.update({
+  const updatedMembership = await prisma.tenantMembership.update({
     where: { id },
-    data: { rentAmount, autopayEnabled, paymentMethodLabel }
+    data: { autopayEnabled, paymentMethodLabel }
   });
 
   res.json(apiResponse(updated, 'Tenant updated successfully'));
@@ -446,7 +439,6 @@ router.post('/transfer', catchAsync(async (req: AuthRequest, res) => {
       userId: oldMembership.userId,
       unitId: newUnitId,
       landlordId: oldMembership.landlordId,
-      rentAmount: newUnit.rentAmount,
       moveInDate: new Date(),
       inviteStatus: 'ACCEPTED',
       status: 'ACTIVE'

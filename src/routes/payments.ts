@@ -1,10 +1,11 @@
 import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 import prisma from '../lib/prisma.js';
-import { ValidationError } from '../lib/errors.js';
+import { ValidationError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
+import logger from '../lib/logger.js';
 
 const router = Router();
 
@@ -62,24 +63,102 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse(payments, null, pagination));
 }));
 
-// POST /api/payments (mark payment as paid)
+// POST /api/payments (record manual payment - landlord only)
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId, amount, method, date, month, note } = req.body;
+  const user = req.user!;
+  const { tenantMembershipId, amount, date, note } = req.body;
 
-  if (!tenantMembershipId || !amount || !method || !date || !month) {
-    throw new ValidationError('Missing required fields');
+  // Validate required fields
+  if (!tenantMembershipId || !amount || !date) {
+    throw new ValidationError('Missing required fields: tenantMembershipId, amount, date');
   }
 
+  // Verify user is a landlord
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+
+  if (!landlord) {
+    throw new ForbiddenError('Only landlords can record payments');
+  }
+
+  // Validate tenant membership exists and belongs to this landlord
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id: tenantMembershipId },
+    include: { unit: true }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant membership not found');
+  }
+
+  if (membership.landlordId !== landlord.id) {
+    throw new ForbiddenError('You do not own this tenant membership');
+  }
+
+  // Validate amount
+  const parsedAmount = typeof amount === 'string' ? parseFloat(amount) : amount;
+  if (isNaN(parsedAmount) || parsedAmount <= 0) {
+    throw new ValidationError('Amount must be a positive number');
+  }
+
+  // Generate month from date (format: "2026-01")
+  const paymentDate = new Date(date);
+  const month = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, '0')}`;
+
+  // Check for duplicate payment for this month
+  const existingPayment = await prisma.payment.findFirst({
+    where: {
+      tenantMembershipId,
+      month
+    }
+  });
+
+  if (existingPayment) {
+    throw new ValidationError(`Payment already recorded for ${month}. Delete the existing payment first if you need to correct it.`);
+  }
+
+  // Validate amount matches tenant's rent (allow small variance for rounding)
+  const rentAmount = parseFloat(membership.unit.rentAmount.toString());
+  const difference = Math.abs(parsedAmount - rentAmount);
+  if (difference > 1) { // Allow $1 difference for rounding
+    logger.warn({ 
+      tenantId: tenantMembershipId, 
+      expectedRent: rentAmount, 
+      paidAmount: parsedAmount 
+    }, 'Payment amount does not match rent amount');
+  }
+
+  // Create payment record
   const payment = await prisma.payment.create({
     data: {
       tenantMembershipId,
-      amount,
-      method,
-      date: new Date(date),
+      amount: parsedAmount,
+      method: 'MANUAL',
+      date: paymentDate,
       month,
-      note
+      note: note || null
+    },
+    include: {
+      tenantMembership: {
+        include: {
+          user: true,
+          unit: {
+            include: {
+              property: true
+            }
+          }
+        }
+      }
     }
   });
+
+  logger.info({ 
+    paymentId: payment.id, 
+    tenantId: tenantMembershipId, 
+    amount: parsedAmount, 
+    month 
+  }, 'Manual payment recorded');
 
   res.status(201).json(apiResponse(payment, 'Payment recorded successfully'));
 }));

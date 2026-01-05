@@ -64,7 +64,6 @@ CREATE TABLE "tenant_memberships" (
     "userId" TEXT NOT NULL,
     "unitId" TEXT NOT NULL,
     "landlordId" TEXT NOT NULL,
-    "rentAmount" DECIMAL(10,2) NOT NULL,
     "moveInDate" TIMESTAMP(3) NOT NULL,
     "moveOutDate" TIMESTAMP(3),
     "movedOutAt" TIMESTAMP(3),
