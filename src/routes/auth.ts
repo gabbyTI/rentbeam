@@ -362,4 +362,106 @@ router.post(
   })
 );
 
+// DELETE /api/auth/account - Delete user account and all associated data
+router.delete(
+  '/account',
+  authenticate,
+  catchAsync(async (req: AuthRequest, res) => {
+    const userId = req.user!.id;
+    const userEmail = req.user!.email;
+
+    logger.info({ userId }, 'Starting account deletion');
+
+    // Use transaction for atomicity - all deletions succeed or none do
+    await prisma.$transaction(async (tx) => {
+      // Check if user has a landlord account
+      const landlord = await tx.landlordAccount.findUnique({
+        where: { userId },
+        include: {
+          properties: {
+            include: {
+              units: {
+                include: {
+                  tenantMemberships: true
+                }
+              }
+            }
+          }
+        }
+      });
+
+      if (landlord) {
+        logger.info({ landlordId: landlord.id }, 'Deleting landlord account and cascade data');
+        
+        // Cascade delete: Payments → TenantMemberships → Units → Properties → LandlordAccount
+        for (const property of landlord.properties) {
+          for (const unit of property.units) {
+            for (const membership of unit.tenantMemberships) {
+              // Delete all payments for this membership
+              await tx.payment.deleteMany({
+                where: { tenantMembershipId: membership.id }
+              });
+            }
+            // Delete all tenant memberships for this unit
+            await tx.tenantMembership.deleteMany({
+              where: { unitId: unit.id }
+            });
+          }
+          // Delete all units for this property
+          await tx.unit.deleteMany({
+            where: { propertyId: property.id }
+          });
+        }
+        // Delete all properties for this landlord
+        await tx.property.deleteMany({
+          where: { landlordId: landlord.id }
+        });
+        // Delete the landlord account
+        await tx.landlordAccount.delete({
+          where: { id: landlord.id }
+        });
+      }
+
+      // Delete tenant memberships if user is a tenant
+      const tenantMemberships = await tx.tenantMembership.findMany({
+        where: { userId }
+      });
+
+      if (tenantMemberships.length > 0) {
+        logger.info({ count: tenantMemberships.length }, 'Deleting tenant memberships');
+        for (const membership of tenantMemberships) {
+          // Delete all payments for this membership
+          await tx.payment.deleteMany({
+            where: { tenantMembershipId: membership.id }
+          });
+        }
+        // Delete all tenant memberships
+        await tx.tenantMembership.deleteMany({
+          where: { userId }
+        });
+      }
+
+      // Finally delete the user record
+      await tx.user.delete({
+        where: { id: userId }
+      });
+
+      logger.info({ userId }, 'Database records deleted successfully');
+    });
+
+    // Optional: Delete from Cognito (do this after DB to ensure DB is cleaned up even if Cognito fails)
+    if (userEmail) {
+      try {
+        await cognitoService.deleteUser(userEmail);
+        logger.info({ email: userEmail }, 'Cognito user deleted successfully');
+      } catch (err: any) {
+        // Log warning but don't fail the request - DB is already cleaned up
+        logger.warn({ email: userEmail, error: err.message }, 'Failed to delete Cognito user');
+      }
+    }
+
+    res.json(apiResponse(null, 'Account deleted successfully'));
+  })
+);
+
 export default router;
