@@ -12,6 +12,7 @@ import {
   SignUpCommand,
   ConfirmSignUpCommand,
   AdminDeleteUserCommand,
+  AdminUpdateUserAttributesCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -214,6 +215,20 @@ export const cognitoService = {
     const command = new AdminDeleteUserCommand({
       UserPoolId: USER_POOL_ID,
       Username: email,
+    });
+
+    await client.send(command);
+  },
+
+  // Update user email in Cognito
+  async updateUserEmail(oldEmail: string, newEmail: string): Promise<void> {
+    const command = new AdminUpdateUserAttributesCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: oldEmail, // Username is still the old email
+      UserAttributes: [
+        { Name: 'email', Value: newEmail },
+        { Name: 'email_verified', Value: 'true' }, // Keep email verified
+      ],
     });
 
     await client.send(command);

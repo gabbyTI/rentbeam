@@ -377,6 +377,89 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse(membership));
 }));
 
+// PATCH /api/tenants/:id/user-info (landlord updates tenant user information)
+router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+  const { name, email, phone } = req.body;
+
+  // Validate at least one field is provided
+  if (!name && !email && !phone) {
+    throw new ValidationError('At least one field (name, email, or phone) must be provided');
+  }
+
+  // Validate email format if provided
+  if (email) {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      throw new ValidationError('Invalid email format');
+    }
+  }
+
+  // Fetch tenant membership
+  const membership = await prisma.tenantMembership.findUnique({
+    where: { id },
+    include: {
+      user: true,
+    }
+  });
+
+  if (!membership) {
+    throw new NotFoundError('Tenant membership not found');
+  }
+
+  // Verify landlord ownership
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id }
+  });
+
+  if (!landlord || membership.landlordId !== landlord.id) {
+    throw new ForbiddenError('Not authorized to update this tenant');
+  }
+
+  // If email is being changed, check if new email already exists
+  if (email && email !== membership.user.email) {
+    const existingUser = await prisma.user.findUnique({
+      where: { email }
+    });
+
+    if (existingUser) {
+      throw new ValidationError('Email address is already in use');
+    }
+
+    // If user has Cognito account, update email there too
+    if (membership.user.cognitoId) {
+      try {
+        await cognitoService.updateUserEmail(membership.user.email, email);
+        logger.info({ oldEmail: membership.user.email, newEmail: email }, 'Updated Cognito user email');
+      } catch (error) {
+        logger.error({ error, email }, 'Failed to update Cognito user email');
+        throw new Error('Failed to update email in authentication system');
+      }
+    }
+  }
+
+  // Update user information
+  const updateData: any = {};
+  if (name) updateData.name = name;
+  if (email) updateData.email = email;
+  if (phone !== undefined) updateData.phone = phone || null; // Allow clearing phone
+
+  const updatedUser = await prisma.user.update({
+    where: { id: membership.userId },
+    data: updateData
+  });
+
+  logger.info({ 
+    tenantMembershipId: id, 
+    userId: membership.userId,
+    landlordId: landlord.id,
+    updatedFields: Object.keys(updateData)
+  }, 'Landlord updated tenant user information');
+
+  res.json(apiResponse(updatedUser, 'Tenant information updated successfully'));
+}));
+
 // PATCH /api/tenants/:id
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const { id } = req.params;
