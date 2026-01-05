@@ -280,10 +280,17 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
       id: user.id,
       email: user.email,
       name: user.name,
+      phone: user.phone,
+      businessName: user.businessName,
+      taxId: user.taxId,
       cognitoId: user.cognitoId,
     },
     memberships: {
-      landlord: user.landlordAccount ? { id: user.landlordAccount.id } : null,
+      landlord: user.landlordAccount ? {
+        id: user.landlordAccount.id,
+        defaultDueDay: user.landlordAccount.defaultDueDay,
+        defaultGracePeriodDays: user.landlordAccount.defaultGracePeriodDays,
+      } : null,
       tenants: user.tenantMemberships.map(tm => ({
         id: tm.id,
         unitId: tm.unitId,
@@ -293,6 +300,35 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
       })),
     },
   }));
+}));
+
+// PATCH /api/auth/profile - Update user profile
+router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const { name, phone, businessName, taxId } = req.body;
+
+  // Build update object with only provided fields
+  const updateData: any = {};
+  if (name !== undefined) updateData.name = name;
+  if (phone !== undefined) updateData.phone = phone;
+  if (businessName !== undefined) updateData.businessName = businessName;
+  if (taxId !== undefined) updateData.taxId = taxId;
+
+  // Update user
+  const updatedUser = await prisma.user.update({
+    where: { id: userId },
+    data: updateData,
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      phone: true,
+      businessName: true,
+      taxId: true,
+    },
+  });
+
+  res.json(apiResponse(updatedUser, 'Profile updated successfully'));
 }));
 
 router.post(

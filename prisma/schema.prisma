@@ -11,13 +11,15 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(uuid())
-  cognitoId String?  @unique
-  email     String   @unique
-  name      String
-  phone     String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id           String   @id @default(uuid())
+  cognitoId    String?  @unique
+  email        String   @unique
+  name         String
+  phone        String?
+  businessName String?
+  taxId        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   landlordAccount   LandlordAccount?
   tenantMemberships TenantMembership[]
@@ -26,13 +28,15 @@ model User {
 }
 
 model LandlordAccount {
-  id              String   @id @default(uuid())
-  userId          String   @unique
-  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  payoutsEnabled  Boolean  @default(false)
-  stripeAccountId String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                     String   @id @default(uuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payoutsEnabled         Boolean  @default(false)
+  stripeAccountId        String?
+  defaultDueDay          Int      @default(1)
+  defaultGracePeriodDays Int      @default(5)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   properties Property[]
 
