@@ -44,7 +44,24 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 
 // JSON middleware for all other routes
 app.use(express.json());
-app.use(pinoHttp({ logger }));
+app.use(pinoHttp({ 
+  logger,
+  autoLogging: {
+    ignore: (req) => req.url === '/health'
+  },
+  customSuccessMessage: (req, res) => {
+    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    return `${req.method} ${fullUrl} ${res.statusCode}`;
+  },
+  customErrorMessage: (req, res, err) => {
+    const fullUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+    return `${req.method} ${fullUrl} ${res.statusCode} - ${err.message}`;
+  },
+  serializers: {
+    req: () => undefined,
+    res: () => undefined
+  }
+}));
 
 // Routes
 app.use('/health', healthRoutes);

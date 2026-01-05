@@ -303,9 +303,9 @@ router.post(
       throw new BadRequestError(`Payment already recorded for ${month}`);
     }
 
-    // Create PaymentIntent
+    // Create PaymentIntent (convert dollars to cents)
     const paymentIntent = await stripeService.createPaymentIntent({
-      amount: fees.totalAmount,
+      amount: Math.round(fees.totalAmount * 100),
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
       metadata: {

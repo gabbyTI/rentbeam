@@ -150,12 +150,24 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
  * Create payment record
  */
 async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
+  logger.info({ 
+    paymentIntentId: paymentIntent.id, 
+    metadata: paymentIntent.metadata,
+    amount: paymentIntent.amount,
+    status: paymentIntent.status 
+  }, 'Processing payment_intent.succeeded webhook');
+
   const { tenantMembershipId, month, rentAmount, processingFee } = paymentIntent.metadata;
 
   if (!tenantMembershipId || !month) {
-    logger.warn({ paymentIntentId: paymentIntent.id }, 'PaymentIntent missing required metadata');
+    logger.warn({ 
+      paymentIntentId: paymentIntent.id,
+      metadata: paymentIntent.metadata 
+    }, 'PaymentIntent missing required metadata');
     return;
   }
+
+  logger.info({ tenantMembershipId, month, rentAmount, processingFee }, 'Extracted metadata from payment intent');
 
   // Check if payment already recorded (idempotency)
   const existingPayment = await prisma.payment.findFirst({
@@ -165,13 +177,15 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
   });
 
   if (existingPayment) {
-    logger.info({ paymentId: existingPayment.id }, 'Payment already recorded');
+    logger.info({ paymentId: existingPayment.id, paymentIntentId: paymentIntent.id }, 'Payment already recorded (idempotency check)');
     return;
   }
 
+  logger.info('No existing payment found, proceeding to create new payment record');
+
   // Get actual fee from Stripe balance transaction
   let actualProcessingFee = parseFloat(processingFee || '0');
-  if (paymentIntent.charges.data.length > 0) {
+  if (paymentIntent.charges && paymentIntent.charges.data && paymentIntent.charges.data.length > 0) {
     const charge = paymentIntent.charges.data[0];
     if (charge.balance_transaction) {
       // Note: balance_transaction is just an ID, would need to fetch it
@@ -180,54 +194,74 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     }
   }
 
+  logger.info({ 
+    rentAmount, 
+    processingFee: actualProcessingFee, 
+    totalAmount: paymentIntent.amount / 100 
+  }, 'Calculated payment amounts');
+
   // Create payment record
-  const payment = await prisma.payment.create({
-    data: {
-      tenantMembershipId,
-      rentAmount: parseFloat(rentAmount || '0'),
-      processingFee: actualProcessingFee,
-      platformFee: 0,
-      totalAmount: paymentIntent.amount / 100, // Convert from cents
-      amount: parseFloat(rentAmount || '0'), // Legacy field
-      method: 'CARD',
-      status: 'SUCCEEDED',
-      date: new Date(),
-      month,
-      stripePaymentIntentId: paymentIntent.id,
-      note: 'Paid via Stripe',
-    },
-    include: {
-      tenantMembership: {
-        include: {
-          user: true,
-          unit: {
-            include: {
-              property: true,
+  try {
+    const payment = await prisma.payment.create({
+      data: {
+        tenantMembershipId,
+        rentAmount: parseFloat(rentAmount || '0'),
+        processingFee: actualProcessingFee,
+        platformFee: 0,
+        totalAmount: paymentIntent.amount / 100, // Convert from cents
+        amount: parseFloat(rentAmount || '0'), // Legacy field
+        method: 'CARD',
+        status: 'SUCCEEDED',
+        date: new Date(),
+        month,
+        stripePaymentIntentId: paymentIntent.id,
+        note: 'Paid via Stripe',
+      },
+      include: {
+        tenantMembership: {
+          include: {
+            user: true,
+            unit: {
+              include: {
+                property: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    });
 
-  logger.info({
-    paymentId: payment.id,
-    tenantMembershipId,
-    amount: payment.totalAmount,
-    month,
-  }, 'Payment recorded from Stripe');
+    logger.info({
+      paymentId: payment.id,
+      tenantMembershipId,
+      amount: payment.totalAmount,
+      month,
+      stripePaymentIntentId: paymentIntent.id,
+    }, 'Payment record created successfully');
 
-  // Send success email
-  await emailService.sendPaymentSuccessEmail({
-    email: payment.tenantMembership.user.email,
-    tenantName: payment.tenantMembership.user.name,
-    rentAmount: payment.rentAmount.toString(),
-    processingFee: payment.processingFee.toString(),
-    totalAmount: payment.totalAmount.toString(),
-    paymentDate: payment.date.toLocaleDateString(),
-    propertyName: payment.tenantMembership.unit.property.name,
-    unitName: payment.tenantMembership.unit.name,
-  });
+    // Send success email
+    await emailService.sendPaymentSuccessEmail({
+      email: payment.tenantMembership.user.email,
+      tenantName: payment.tenantMembership.user.name,
+      rentAmount: payment.rentAmount.toString(),
+      processingFee: payment.processingFee.toString(),
+      totalAmount: payment.totalAmount.toString(),
+      paymentDate: payment.date.toLocaleDateString(),
+      propertyName: payment.tenantMembership.unit.property.name,
+      unitName: payment.tenantMembership.unit.name,
+    });
+
+    logger.info({ paymentId: payment.id }, 'Payment success email sent');
+  } catch (error: any) {
+    logger.error({ 
+      error: error.message, 
+      stack: error.stack,
+      paymentIntentId: paymentIntent.id,
+      tenantMembershipId,
+      month 
+    }, 'Failed to create payment record');
+    throw error;
+  }
 }
 
 /**
