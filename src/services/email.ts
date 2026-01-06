@@ -351,6 +351,71 @@ If you didn't request this change, please ignore this email and your account wil
     }
   },
 
+  async sendPaymentReminderEmail(params: {
+    email: string;
+    tenantName: string;
+    rentAmount: string;
+    dueDate: string;
+    propertyName: string;
+    unitName: string;
+    autopayEnabled: boolean;
+    gracePeriodDays: number;
+  }): Promise<void> {
+    const autopayMessage = params.autopayEnabled
+      ? '<p style="color: #059669; background-color: #d1fae5; padding: 12px; border-radius: 6px; border-left: 4px solid #059669;">✓ <strong>Autopay is enabled</strong> - Your payment will be automatically processed on the due date.</p>'
+      : '<p>Please remember to pay your rent on or before the due date to avoid late fees.</p>';
+
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        to: params.email,
+        subject: '🔔 Rent Payment Due Soon',
+        html: `
+          <h2>🔔 Rent Payment Reminder</h2>
+          <p>Hi ${params.tenantName},</p>
+          <p>This is a friendly reminder that your rent payment is due in <strong>3 days</strong>.</p>
+          
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="margin-top: 0;">Payment Details</h3>
+            <p><strong>Property:</strong> ${params.propertyName} - Unit ${params.unitName}</p>
+            <p><strong>Amount Due:</strong> $${params.rentAmount}</p>
+            <p><strong>Due Date:</strong> ${params.dueDate}</p>
+            <p><strong>Grace Period:</strong> ${params.gracePeriodDays} days</p>
+          </div>
+
+          ${autopayMessage}
+
+          ${!params.autopayEnabled ? '<a href="' + process.env.FRONTEND_URL + '/tenant/dashboard" style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0;">Pay Now</a>' : ''}
+
+          <hr>
+          <p style="color: #666; font-size: 12px;">Questions? Contact your landlord or visit your dashboard.</p>
+        `,
+        text: `
+Rent Payment Reminder 🔔
+
+Hi ${params.tenantName},
+
+This is a friendly reminder that your rent payment is due in 3 days.
+
+Payment Details:
+Property: ${params.propertyName} - Unit ${params.unitName}
+Amount Due: $${params.rentAmount}
+Due Date: ${params.dueDate}
+Grace Period: ${params.gracePeriodDays} days
+
+${params.autopayEnabled ? '✓ Autopay is enabled - Your payment will be automatically processed on the due date.' : 'Please remember to pay your rent on or before the due date to avoid late fees.'}
+
+${!params.autopayEnabled ? 'Pay Now: ' + process.env.FRONTEND_URL + '/tenant/dashboard' : ''}
+        `
+      });
+
+      logger.info({ email: params.email }, '📧 Payment reminder email sent');
+    } catch (error) {
+      logger.error({ error, email: params.email }, 'Failed to send payment reminder email');
+      throw error;
+    }
+  },
+
   async sendNotificationEmailVerification(email: string, code: string, userName: string): Promise<void> {
     try {
       await transporter.sendMail({

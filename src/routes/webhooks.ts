@@ -186,16 +186,8 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
 
   logger.info('No existing payment found, proceeding to create new payment record');
 
-  // Get actual fee from Stripe balance transaction
-  let actualProcessingFee = parseFloat(processingFee || '0');
-  if (paymentIntent.charges && paymentIntent.charges.data && paymentIntent.charges.data.length > 0) {
-    const charge = paymentIntent.charges.data[0];
-    if (charge.balance_transaction) {
-      // Note: balance_transaction is just an ID, would need to fetch it
-      // For now, use metadata fee
-      actualProcessingFee = parseFloat(processingFee || '0');
-    }
-  }
+  // Use processing fee from metadata
+  const actualProcessingFee = parseFloat(processingFee || '0');
 
   logger.info({ 
     rentAmount, 

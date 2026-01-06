@@ -225,7 +225,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             await emailService.sendPaymentFailedEmail({
               email: tenant.user.email,
               tenantName: tenant.user.name,
-              rentAmount: rentAmount.toFixed(2),
+              rentAmount: Number(tenant.unit.rentAmount).toFixed(2),
               errorMessage: error.message || 'Card declined',
               propertyName: tenant.unit.property.name,
               unitName: tenant.unit.name,

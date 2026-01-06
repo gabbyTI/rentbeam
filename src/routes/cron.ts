@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { processAutopayCharges } from '../jobs/autopay.js';
+import { sendPaymentReminders } from '../jobs/reminders.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import logger from '../lib/logger.js';
@@ -39,6 +40,16 @@ router.post('/process-autopay', verifyCronSecret, catchAsync(async (req: Request
   const result = await processAutopayCharges();
 
   res.json(apiResponse(result, 'Autopay processing completed'));
+}));
+
+// POST /api/cron/send-reminders
+// Send payment reminders to tenants 3 days before due date
+router.post('/send-reminders', verifyCronSecret, catchAsync(async (req: Request, res: Response) => {
+  logger.info({ source: 'cron-endpoint' }, 'Sending payment reminders via HTTP endpoint');
+
+  const result = await sendPaymentReminders();
+
+  res.json(apiResponse(result, 'Payment reminders sent'));
 }));
 
 // GET /api/cron/health

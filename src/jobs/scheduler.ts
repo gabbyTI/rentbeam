@@ -78,8 +78,37 @@ export function initializeScheduler() {
     }
   });
 
-  logger.info('Cron jobs scheduled: autopay at 00:00 and 10:00 daily');
+  // Send payment reminders daily at 09:00 (9 AM)
+  const reminderJob = cron.schedule('0 9 * * *', async () => {
+    logger.info('Cron: Triggering payment reminders');
+
+    try {
+      const response = await axios.post(
+        `${baseUrl}/api/cron/send-reminders`,
+        {},
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(cronSecret && { Authorization: `Bearer ${cronSecret}` }),
+          },
+          timeout: 300000,
+        }
+      );
+
+      logger.info({ result: response.data }, 'Cron: Payment reminders completed');
+    } catch (error: any) {
+      logger.error(
+        {
+          error: error.message,
+          response: error.response?.data,
+        },
+        'Cron: Payment reminders failed'
+      );
+    }
+  });
+
+  logger.info('Cron jobs scheduled: autopay at 00:00 and 10:00, reminders at 09:00 daily');
 
   // Return jobs for potential cleanup on shutdown
-  return { autopayJob, retryJob };
+  return { autopayJob, retryJob, reminderJob };
 }

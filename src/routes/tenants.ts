@@ -441,7 +441,7 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
     data: { autopayEnabled, paymentMethodLabel }
   });
 
-  res.json(apiResponse(updated, 'Tenant updated successfully'));
+  res.json(apiResponse(updatedMembership, 'Tenant updated successfully'));
 }));
 
 // DELETE /api/tenants/:id
