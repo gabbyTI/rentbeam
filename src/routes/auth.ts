@@ -1,5 +1,7 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { cognitoService } from '../services/cognito.js';
+import { emailService } from '../services/email.js';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
 import { ConflictError, ValidationError, UnauthorizedError, NotFoundError } from '../lib/errors.js';
@@ -8,6 +10,20 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
+
+// In-memory storage for notification email verification codes
+// Format: { userId: { code: string, email: string, expiresAt: Date } }
+const notificationEmailVerifications = new Map<string, { code: string; email: string; expiresAt: Date }>();
+
+// Cleanup expired codes every minute
+setInterval(() => {
+  const now = new Date();
+  for (const [userId, data] of notificationEmailVerifications.entries()) {
+    if (data.expiresAt < now) {
+      notificationEmailVerifications.delete(userId);
+    }
+  }
+}, 60000);
 
 // POST /api/auth/signup-landlord
 router.post('/signup-landlord', catchAsync(async (req, res) => {
@@ -279,6 +295,7 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
     user: {
       id: user.id,
       email: user.email,
+      notificationEmail: user.notificationEmail,
       name: user.name,
       phone: user.phone,
       businessName: user.businessName,
@@ -305,7 +322,7 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
 // PATCH /api/auth/profile - Update user profile
 router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
-  const { name, phone, businessName, taxId } = req.body;
+  const { name, phone, businessName, taxId, notificationEmail } = req.body;
 
   // Build update object with only provided fields
   const updateData: any = {};
@@ -313,6 +330,7 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
   if (phone !== undefined) updateData.phone = phone;
   if (businessName !== undefined) updateData.businessName = businessName;
   if (taxId !== undefined) updateData.taxId = taxId;
+  if (notificationEmail !== undefined) updateData.notificationEmail = notificationEmail;
 
   // Update user
   const updatedUser = await prisma.user.update({
@@ -321,6 +339,7 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
     select: {
       id: true,
       email: true,
+      notificationEmail: true,
       name: true,
       phone: true,
       businessName: true,
@@ -463,5 +482,90 @@ router.delete(
     res.json(apiResponse(null, 'Account deleted successfully'));
   })
 );
+
+// POST /api/auth/notification-email/initiate
+router.post('/notification-email/initiate', authenticate, catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { notificationEmail } = req.body;
+
+  // Validation
+  if (!notificationEmail || typeof notificationEmail !== 'string') {
+    throw new ValidationError('Notification email is required');
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(notificationEmail)) {
+    throw new ValidationError('Invalid email format');
+  }
+
+  // Generate 6-digit verification code
+  const code = crypto.randomInt(100000, 999999).toString();
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+  // Store verification data
+  notificationEmailVerifications.set(user.id, {
+    code,
+    email: notificationEmail,
+    expiresAt
+  });
+
+  // Send verification email
+  await emailService.sendNotificationEmailVerification(notificationEmail, code, user.name);
+
+  logger.info({ userId: user.id, email: notificationEmail }, 'Notification email verification code sent');
+
+  res.json(apiResponse(null, 'Verification code sent to notification email'));
+}));
+
+// POST /api/auth/notification-email/confirm
+router.post('/notification-email/confirm', authenticate, catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { code } = req.body;
+
+  // Validation
+  if (!code || typeof code !== 'string') {
+    throw new ValidationError('Verification code is required');
+  }
+
+  // Get stored verification data
+  const verificationData = notificationEmailVerifications.get(user.id);
+
+  if (!verificationData) {
+    throw new ValidationError('No verification in progress. Please request a new code.');
+  }
+
+  // Check if code expired
+  if (new Date() > verificationData.expiresAt) {
+    notificationEmailVerifications.delete(user.id);
+    throw new ValidationError('Verification code expired. Please request a new code.');
+  }
+
+  // Verify code
+  if (code !== verificationData.code) {
+    throw new ValidationError('Invalid verification code');
+  }
+
+  // Update notification email in database
+  const updatedUser = await prisma.user.update({
+    where: { id: user.id },
+    data: { notificationEmail: verificationData.email },
+    select: {
+      id: true,
+      email: true,
+      notificationEmail: true,
+      name: true,
+      phone: true,
+      businessName: true,
+      taxId: true,
+    }
+  });
+
+  // Clean up verification data
+  notificationEmailVerifications.delete(user.id);
+
+  logger.info({ userId: user.id, notificationEmail: verificationData.email }, 'Notification email updated successfully');
+
+  res.json(apiResponse(updatedUser, 'Notification email verified and updated successfully'));
+}));
 
 export default router;

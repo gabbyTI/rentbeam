@@ -381,19 +381,11 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
 router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { id } = req.params;
-  const { name, email, phone } = req.body;
+  const { name, phone } = req.body;
 
   // Validate at least one field is provided
-  if (!name && !email && !phone) {
-    throw new ValidationError('At least one field (name, email, or phone) must be provided');
-  }
-
-  // Validate email format if provided
-  if (email) {
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-      throw new ValidationError('Invalid email format');
-    }
+  if (!name && phone === undefined) {
+    throw new ValidationError('At least one field (name or phone) must be provided');
   }
 
   // Fetch tenant membership
@@ -417,32 +409,11 @@ router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
     throw new ForbiddenError('Not authorized to update this tenant');
   }
 
-  // If email is being changed, check if new email already exists
-  if (email && email !== membership.user.email) {
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    });
-
-    if (existingUser) {
-      throw new ValidationError('Email address is already in use');
-    }
-
-    // If user has Cognito account, update email there too
-    if (membership.user.cognitoId) {
-      try {
-        await cognitoService.updateUserEmail(membership.user.email, email);
-        logger.info({ oldEmail: membership.user.email, newEmail: email }, 'Updated Cognito user email');
-      } catch (error) {
-        logger.error({ error, email }, 'Failed to update Cognito user email');
-        throw new Error('Failed to update email in authentication system');
-      }
-    }
-  }
-
   // Update user information
+  // Note: Login email (user.email) cannot be changed as it's tied to Cognito username
+  // notificationEmail can only be changed by the tenant themselves (with verification)
   const updateData: any = {};
   if (name) updateData.name = name;
-  if (email) updateData.email = email;
   if (phone !== undefined) updateData.phone = phone || null; // Allow clearing phone
 
   const updatedUser = await prisma.user.update({
@@ -580,10 +551,12 @@ router.patch('/:id/autopay', catchAsync(async (req: AuthRequest, res) => {
   };
 
   if (autopayEnabled) {
-    // Record consent timestamp when enabling
+    // Record consent timestamp when enabling and reset failure count
     updateData.autopayConsentAt = new Date();
     updateData.autopayDisabledAt = null;
     updateData.autopayDisableReason = null;
+    updateData.autopayFailureCount = 0;
+    updateData.lastAutopayFailureAt = null;
   } else {
     // Record disabled timestamp when disabling
     updateData.autopayDisabledAt = new Date();

@@ -11,15 +11,16 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(uuid())
-  cognitoId    String?  @unique
-  email        String   @unique
-  name         String
-  phone        String?
-  businessName String?
-  taxId        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                String   @id @default(uuid())
+  cognitoId         String?  @unique
+  email             String   @unique
+  notificationEmail String?
+  name              String
+  phone             String?
+  businessName      String?
+  taxId             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   landlordAccount   LandlordAccount?
   tenantMemberships TenantMembership[]
@@ -94,6 +95,8 @@ model TenantMembership {
   autopayDisabledAt      DateTime?
   autopayDisableReason   String?
   autopayConsentAt       DateTime?
+  autopayFailureCount    Int       @default(0)
+  lastAutopayFailureAt   DateTime?
   stripeCustomerId       String?
   defaultPaymentMethodId String?
   paymentMethodLabel     String?

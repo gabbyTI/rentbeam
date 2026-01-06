@@ -104,6 +104,9 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
     data: {
       defaultPaymentMethodId: paymentMethodId,
       paymentMethodLabel: label,
+      // Reset failure count when new payment method is added
+      autopayFailureCount: 0,
+      lastAutopayFailureAt: null,
     },
     include: {
       user: true,

@@ -128,6 +128,21 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
         });
 
         if (paymentIntent.status === 'succeeded') {
+          // Reset failure count on successful payment
+          if (tenant.autopayFailureCount > 0) {
+            await prisma.tenantMembership.update({
+              where: { id: tenant.id },
+              data: {
+                autopayFailureCount: 0,
+                lastAutopayFailureAt: null,
+              },
+            });
+            logger.info(
+              { tenantMembershipId: tenant.id },
+              'Autopay failure count reset after successful payment'
+            );
+          }
+
           logger.info(
             {
               tenantMembershipId: tenant.id,
@@ -165,12 +180,59 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
 
         // Handle specific Stripe errors
         if (error.code === 'card_declined' || error.code === 'insufficient_funds') {
-          // TODO: Send email notification to tenant
-          // TODO: Check retry count, disable autopay after 3 failures
+          // Increment failure count
+          const currentFailureCount = tenant.autopayFailureCount + 1;
+          
+          await prisma.tenantMembership.update({
+            where: { id: tenant.id },
+            data: {
+              autopayFailureCount: currentFailureCount,
+              lastAutopayFailureAt: new Date(),
+            },
+          });
+
           logger.info(
-            { tenantMembershipId: tenant.id, errorCode: error.code },
-            'Card declined, will retry later or disable autopay'
+            { tenantMembershipId: tenant.id, errorCode: error.code, failureCount: currentFailureCount },
+            'Card declined - failure count updated'
           );
+
+          // Disable autopay after 3 failures
+          if (currentFailureCount >= 3) {
+            await prisma.tenantMembership.update({
+              where: { id: tenant.id },
+              data: {
+                autopayEnabled: false,
+                autopayDisabledAt: new Date(),
+                autopayDisableReason: `Autopay disabled after ${currentFailureCount} failed payment attempts. Please update your payment method.`,
+              },
+            });
+
+            logger.warn(
+              { tenantMembershipId: tenant.id, failureCount: currentFailureCount },
+              'Autopay disabled after 3 failed attempts'
+            );
+
+            // Send autopay disabled email
+            await emailService.sendAutopayDisabledEmail({
+              email: tenant.user.email,
+              tenantName: tenant.user.name,
+              reason: `Your card was declined 3 times. Please update your payment method and re-enable autopay.`,
+              propertyName: tenant.unit.property.name,
+              unitName: tenant.unit.name,
+            });
+          } else {
+            // Send payment failed email (will retry on next run)
+            await emailService.sendPaymentFailedEmail({
+              email: tenant.user.email,
+              tenantName: tenant.user.name,
+              rentAmount: rentAmount.toFixed(2),
+              errorMessage: error.message || 'Card declined',
+              propertyName: tenant.unit.property.name,
+              unitName: tenant.unit.name,
+              isAutopay: true,
+              failureCount: currentFailureCount,
+            });
+          }
         } else if (error.code === 'authentication_required') {
           // Card requires 3D Secure, disable autopay
           await prisma.tenantMembership.update({

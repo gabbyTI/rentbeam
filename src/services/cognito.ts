@@ -13,6 +13,8 @@ import {
   ConfirmSignUpCommand,
   AdminDeleteUserCommand,
   AdminUpdateUserAttributesCommand,
+  GetUserAttributeVerificationCodeCommand,
+  VerifyUserAttributeCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -220,15 +222,49 @@ export const cognitoService = {
     await client.send(command);
   },
 
-  // Update user email in Cognito
-  async updateUserEmail(oldEmail: string, newEmail: string): Promise<void> {
-    const command = new AdminUpdateUserAttributesCommand({
+  // Update user email in Cognito and send verification code
+  async updateUserEmail(oldEmail: string, newEmail: string, accessToken: string): Promise<void> {
+    // Step 1: Update the email attribute (sets it as unverified)
+    const updateCommand = new AdminUpdateUserAttributesCommand({
       UserPoolId: USER_POOL_ID,
       Username: oldEmail, // Username is still the old email
       UserAttributes: [
         { Name: 'email', Value: newEmail },
-        { Name: 'email_verified', Value: 'true' }, // Keep email verified
+        // email_verified will be set to false by Cognito, requiring verification
       ],
+    });
+
+    await client.send(updateCommand);
+    
+    // Step 2: Request verification code to be sent to new email
+    const verifyCommand = new GetUserAttributeVerificationCodeCommand({
+      AccessToken: accessToken,
+      AttributeName: 'email',
+    });
+    
+    await client.send(verifyCommand);
+  },
+
+  // Update email in Cognito with verified status (after our OTP verification)
+  async updateUserEmailVerified(oldEmail: string, newEmail: string): Promise<void> {
+    const command = new AdminUpdateUserAttributesCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: oldEmail,
+      UserAttributes: [
+        { Name: 'email', Value: newEmail },
+        { Name: 'email_verified', Value: 'true' }, // Mark as verified since we verified via OTP
+      ],
+    });
+
+    await client.send(command);
+  },
+
+  // Verify email attribute with verification code
+  async verifyEmailAttribute(accessToken: string, code: string): Promise<void> {
+    const command = new VerifyUserAttributeCommand({
+      AccessToken: accessToken,
+      AttributeName: 'email',
+      Code: code,
     });
 
     await client.send(command);

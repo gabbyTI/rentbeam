@@ -127,7 +127,12 @@ Thank you for using RentTrack!
     propertyName: string;
     unitName: string;
     isAutopay: boolean;
+    failureCount?: number;
   }): Promise<void> {
+    const retryMessage = params.failureCount 
+      ? `This is attempt ${params.failureCount} of 3. After 3 failed attempts, autopay will be automatically disabled.`
+      : '';
+
     try {
       await transporter.sendMail({
         from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
@@ -143,13 +148,14 @@ Thank you for using RentTrack!
             <p><strong>Property:</strong> ${params.propertyName} - Unit ${params.unitName}</p>
             <p><strong>Amount:</strong> $${params.rentAmount}</p>
             <p><strong>Error:</strong> ${params.errorMessage}</p>
+            ${retryMessage ? `<p style="color: #991b1b; font-weight: bold; margin-top: 12px;">⚠️ ${retryMessage}</p>` : ''}
           </div>
 
           <p><strong>What to do next:</strong></p>
           <ul>
             <li>Check that your payment method is valid and has sufficient funds</li>
             <li>Update your payment method in your dashboard if needed</li>
-            <li>Try paying again or contact your landlord</li>
+            ${params.isAutopay ? '<li>We will automatically retry on the next scheduled autopay run</li>' : '<li>Try paying again or contact your landlord</li>'}
           </ul>
 
           <a href="${process.env.FRONTEND_URL}/tenant/dashboard" style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0;">Go to Dashboard</a>
@@ -168,11 +174,12 @@ Payment Details:
 Property: ${params.propertyName} - Unit ${params.unitName}
 Amount: $${params.rentAmount}
 Error: ${params.errorMessage}
+${retryMessage ? `\n⚠️ ${retryMessage}` : ''}
 
 What to do next:
 - Check that your payment method is valid and has sufficient funds
 - Update your payment method in your dashboard if needed
-- Try paying again or contact your landlord
+${params.isAutopay ? '- We will automatically retry on the next scheduled autopay run' : '- Try paying again or contact your landlord'}
 
 Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
         `
@@ -297,6 +304,98 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
       logger.info({ email: params.email }, '📧 Payment method saved email sent');
     } catch (error) {
       logger.error({ error, email: params.email }, 'Failed to send payment method saved email');
+    }
+  },
+
+  async sendEmailVerificationCode(email: string, code: string, userName: string): Promise<void> {
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        to: email,
+        subject: 'Verify Your New Email Address',
+        html: `
+          <h2>Email Verification Code</h2>
+          <p>Hi ${userName},</p>
+          <p>You requested to change your email address. Please use the code below to verify your new email:</p>
+          
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
+            <h1 style="font-size: 32px; letter-spacing: 8px; margin: 0; color: #4F46E5;">${code}</h1>
+          </div>
+
+          <p>This code will expire in 10 minutes.</p>
+          
+          <p><strong>If you didn't request this change, please ignore this email and your account will remain secure.</strong></p>
+
+          <hr>
+          <p style="color: #666; font-size: 12px;">This is an automated email from RentTrack. Please do not reply.</p>
+        `,
+        text: `
+Email Verification Code
+
+Hi ${userName},
+
+You requested to change your email address. Please use the code below to verify your new email:
+
+${code}
+
+This code will expire in 10 minutes.
+
+If you didn't request this change, please ignore this email and your account will remain secure.
+        `
+      });
+
+      logger.info({ email }, '📧 Email verification code sent');
+    } catch (error) {
+      logger.error({ error, email }, 'Failed to send email verification code');
+      throw error;
+    }
+  },
+
+  async sendNotificationEmailVerification(email: string, code: string, userName: string): Promise<void> {
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        to: email,
+        subject: 'Verify Your Notification Email - RentTrack',
+        html: `
+          <h2>📧 Verify Your Notification Email</h2>
+          <p>Hi ${userName},</p>
+          <p>You requested to set this email address as your notification email for payment alerts and updates.</p>
+          
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center;">
+            <h3 style="margin-top: 0;">Your Verification Code</h3>
+            <div style="font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #4F46E5; padding: 20px; background-color: white; border-radius: 8px; display: inline-block;">
+              ${code}
+            </div>
+          </div>
+
+          <p>Enter this code in the RentTrack app to confirm your notification email address.</p>
+          <p><strong>This code will expire in 15 minutes.</strong></p>
+
+          <hr>
+          <p style="color: #666; font-size: 12px;">If you didn't request this change, please ignore this email. Your notification email will not be changed.</p>
+        `,
+        text: `
+Verify Your Notification Email
+
+Hi ${userName},
+
+You requested to set this email address as your notification email for payment alerts and updates.
+
+Your Verification Code: ${code}
+
+Enter this code in the RentTrack app to confirm your notification email address.
+
+This code will expire in 15 minutes.
+
+If you didn't request this change, please ignore this email. Your notification email will not be changed.
+        `
+      });
+
+      logger.info({ email }, '📧 Notification email verification code sent');
+    } catch (error) {
+      logger.error({ error, email }, 'Failed to send notification email verification code');
+      throw error;
     }
   },
 };
