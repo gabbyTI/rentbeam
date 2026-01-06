@@ -4,6 +4,13 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
+import {
+  calculateOccupancyRate,
+  calculateMonthlyRevenue,
+  getOutstandingBalance,
+  getPaymentStatusBreakdown,
+  getRecentPayments,
+} from '../utils/analytics.js';
 
 const router = Router();
 
@@ -53,6 +60,99 @@ router.patch('/preferences', authenticate, catchAsync(async (req: AuthRequest, r
   });
 
   res.json(apiResponse(updatedLandlord, 'Preferences updated successfully'));
+}));
+
+// GET /api/landlord/dashboard/analytics - Get dashboard analytics
+router.get('/dashboard/analytics', authenticate, catchAsync(async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+
+  // Find landlord account
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId }
+  });
+
+  if (!landlord) {
+    throw new NotFoundError('Landlord account not found');
+  }
+
+  // Get current month
+  const currentDate = new Date();
+  const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+
+  // Fetch all required data
+  const [units, tenants, payments] = await Promise.all([
+    // Get all units for this landlord
+    prisma.unit.findMany({
+      where: {
+        property: {
+          landlordId: landlord.id
+        }
+      }
+    }),
+    // Get all tenant memberships with unit data
+    prisma.tenantMembership.findMany({
+      where: {
+        landlordId: landlord.id
+      },
+      include: {
+        unit: true,
+        user: {
+          select: {
+            name: true
+          }
+        }
+      }
+    }),
+    // Get all payments for this landlord
+    prisma.payment.findMany({
+      where: {
+        tenantMembership: {
+          landlordId: landlord.id
+        }
+      },
+      include: {
+        tenantMembership: {
+          include: {
+            user: {
+              select: {
+                name: true
+              }
+            }
+          }
+        }
+      },
+      orderBy: {
+        date: 'desc'
+      }
+    })
+  ]);
+
+  // Calculate metrics
+  const occupancy = calculateOccupancyRate(units, tenants);
+  const revenue = calculateMonthlyRevenue(tenants, payments, currentMonth);
+  const outstanding = getOutstandingBalance(tenants, payments);
+  const paymentStatus = getPaymentStatusBreakdown(tenants, payments, currentMonth);
+  const recentActivity = getRecentPayments(payments, 10);
+
+  // Count active tenants stats
+  const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
+  const autopayEnabled = activeTenants.filter(t => t.autopayEnabled).length;
+  const pendingInvites = activeTenants.filter(t => t.inviteStatus === 'PENDING').length;
+
+  const analytics = {
+    occupancy,
+    revenue,
+    outstanding,
+    paymentStatus,
+    activeTenants: {
+      total: activeTenants.length,
+      autopayEnabled,
+      pendingInvites
+    },
+    recentActivity
+  };
+
+  res.json(apiResponse(analytics));
 }));
 
 export default router;
