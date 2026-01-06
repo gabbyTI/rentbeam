@@ -42,6 +42,9 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
         defaultPaymentMethodId: { not: null },
         unit: {
           dueDay: currentDay,
+          property: {
+            acceptOnlinePayments: true, // Only process tenants in properties that accept online payments
+          },
         },
       },
       include: {

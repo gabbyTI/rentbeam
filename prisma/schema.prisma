@@ -45,13 +45,14 @@ model LandlordAccount {
 }
 
 model Property {
-  id         String          @id @default(uuid())
-  landlordId String
-  landlord   LandlordAccount @relation(fields: [landlordId], references: [id], onDelete: Cascade)
-  name       String
-  address    String
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  id                     String          @id @default(uuid())
+  landlordId             String
+  landlord               LandlordAccount @relation(fields: [landlordId], references: [id], onDelete: Cascade)
+  name                   String
+  address                String
+  acceptOnlinePayments   Boolean         @default(true)
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
 
   units Unit[]
 

@@ -66,7 +66,7 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/payments (record manual payment - landlord only)
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { tenantMembershipId, amount, date, note } = req.body;
+  const { tenantMembershipId, amount, date, note, paymentMethod } = req.body;
 
   // Validate required fields
   if (!tenantMembershipId || !amount || !date) {
@@ -134,7 +134,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     data: {
       tenantMembershipId,
       amount: parsedAmount,
-      method: 'MANUAL',
+      method: paymentMethod || 'MANUAL',
       date: paymentDate,
       month,
       note: note || null

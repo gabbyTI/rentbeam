@@ -41,12 +41,15 @@ export async function sendPaymentReminders(): Promise<ReminderResult> {
   };
 
   try {
-    // Find all active tenants whose rent is due in 3 days
+    // Find all active tenants whose rent is due in 3 days (only in properties accepting online payments)
     const eligibleTenants = await prisma.tenantMembership.findMany({
       where: {
         status: 'ACTIVE',
         unit: {
           dueDay: targetDueDay,
+          property: {
+            acceptOnlinePayments: true, // Only send reminders for properties with online payments enabled
+          },
         },
       },
       include: {

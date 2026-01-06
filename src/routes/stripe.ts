@@ -225,11 +225,23 @@ router.post(
     // Get tenant membership
     const membership = await prisma.tenantMembership.findFirst({
       where: { userId, status: 'ACTIVE' },
-      include: { user: true },
+      include: {
+        user: true,
+        unit: {
+          include: {
+            property: true,
+          },
+        },
+      },
     });
 
     if (!membership) {
       throw new NotFoundError('Active tenant membership not found');
+    }
+
+    // Check if property accepts online payments
+    if (!membership.unit.property.acceptOnlinePayments) {
+      throw new BadRequestError('This property does not accept online payments');
     }
 
     // Ensure customer exists
@@ -272,11 +284,22 @@ router.post(
     // Get tenant membership with unit details
     const membership = await prisma.tenantMembership.findFirst({
       where: { userId, status: 'ACTIVE' },
-      include: { unit: true },
+      include: {
+        unit: {
+          include: {
+            property: true,
+          },
+        },
+      },
     });
 
     if (!membership) {
       throw new NotFoundError('Active tenant membership not found');
+    }
+
+    // Check if property accepts online payments
+    if (!membership.unit.property.acceptOnlinePayments) {
+      throw new BadRequestError('This property does not accept online payments');
     }
 
     if (!membership.stripeCustomerId || !membership.defaultPaymentMethodId) {

@@ -81,7 +81,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { id } = req.params;
-  const { name, address } = req.body;
+  const { name, address, acceptOnlinePayments } = req.body;
 
   const landlord = await prisma.landlordAccount.findUnique({
     where: { userId: user.id }
@@ -100,9 +100,35 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
     throw new NotFoundError('Property not found');
   }
 
+  // Build update data
+  const updateData: any = {};
+  if (name !== undefined) updateData.name = name;
+  if (address !== undefined) updateData.address = address;
+  if (acceptOnlinePayments !== undefined) {
+    updateData.acceptOnlinePayments = acceptOnlinePayments;
+    
+    // If disabling online payments, auto-disable autopay for all tenants in this property
+    if (acceptOnlinePayments === false) {
+      await prisma.tenantMembership.updateMany({
+        where: {
+          unit: {
+            propertyId: id
+          },
+          autopayEnabled: true,
+          status: 'ACTIVE'
+        },
+        data: {
+          autopayEnabled: false,
+          autopayDisabledAt: new Date(),
+          autopayDisableReason: 'Property no longer accepts online payments'
+        }
+      });
+    }
+  }
+
   const updated = await prisma.property.update({
     where: { id },
-    data: { name, address }
+    data: updateData
   });
 
   res.json(apiResponse(updated, 'Property updated successfully'));
