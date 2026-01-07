@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import prisma from '../lib/prisma.js';
 import { invitesTotal, updateTenantMetrics } from '../lib/metrics.js';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
-import prisma from '../lib/prisma.js';
 import { ForbiddenError, ValidationError, NotFoundError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
