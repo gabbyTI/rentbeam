@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import crypto from 'crypto';
+import bcrypt from 'bcrypt';
 import { cognitoService } from '../services/cognito.js';
 import { emailService } from '../services/email.js';
 import prisma from '../lib/prisma.js';
@@ -10,20 +10,6 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
-
-// In-memory storage for notification email verification codes
-// Format: { userId: { code: string, email: string, expiresAt: Date } }
-const notificationEmailVerifications = new Map<string, { code: string; email: string; expiresAt: Date }>();
-
-// Cleanup expired codes every minute
-setInterval(() => {
-  const now = new Date();
-  for (const [userId, data] of notificationEmailVerifications.entries()) {
-    if (data.expiresAt < now) {
-      notificationEmailVerifications.delete(userId);
-    }
-  }
-}, 60000);
 
 // POST /api/auth/signup-landlord
 router.post('/signup-landlord', catchAsync(async (req, res) => {
@@ -323,14 +309,41 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
 router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
   const { name, phone, businessName, taxId, notificationEmail } = req.body;
+  logger.info({ userId }, 'Updating user profile');
+  
+  // Fetch current user to compare values
+  const currentUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      notificationEmail: true,
+      name: true,
+      phone: true,
+      businessName: true,
+      taxId: true,
+    },
+  });
 
-  // Build update object with only provided fields
+  if (!currentUser) {
+    throw new ValidationError('User not found');
+  }
+
+  // Build update object with only changed fields
   const updateData: any = {};
-  if (name !== undefined) updateData.name = name;
-  if (phone !== undefined) updateData.phone = phone;
-  if (businessName !== undefined) updateData.businessName = businessName;
-  if (taxId !== undefined) updateData.taxId = taxId;
-  if (notificationEmail !== undefined) updateData.notificationEmail = notificationEmail;
+  if (name !== undefined && name !== currentUser.name) updateData.name = name;
+  if (phone !== undefined && phone !== currentUser.phone) updateData.phone = phone;
+  if (businessName !== undefined && businessName !== currentUser.businessName) updateData.businessName = businessName;
+  if (taxId !== undefined && taxId !== currentUser.taxId) updateData.taxId = taxId;
+  if (notificationEmail !== undefined && notificationEmail !== currentUser.notificationEmail) {
+    updateData.notificationEmail = notificationEmail;
+  }
+
+  // Skip DB operation if no fields actually changed
+  if (Object.keys(updateData).length === 0) {
+    logger.info({ userId }, 'No profile fields changed - skipping DB update');
+    return res.json(apiResponse({ user: currentUser }));
+  }
 
   // Update user
   const updatedUser = await prisma.user.update({
@@ -485,7 +498,7 @@ router.delete(
 
 // POST /api/auth/notification-email/initiate
 router.post('/notification-email/initiate', authenticate, catchAsync(async (req: AuthRequest, res) => {
-  const user = req.user!;
+  const userId = req.user!.id;
   const { notificationEmail } = req.body;
 
   // Validation
@@ -498,28 +511,57 @@ router.post('/notification-email/initiate', authenticate, catchAsync(async (req:
     throw new ValidationError('Invalid email format');
   }
 
-  // Generate 6-digit verification code
-  const code = crypto.randomInt(100000, 999999).toString();
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
-
-  // Store verification data
-  notificationEmailVerifications.set(user.id, {
-    code,
-    email: notificationEmail,
-    expiresAt
+  // Rate limiting: Check recent OTP requests (max 3 per 15 minutes)
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  const recentAttempts = await prisma.otpVerification.count({
+    where: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+      createdAt: { gte: fifteenMinutesAgo },
+    },
   });
 
-  // Send verification email
-  await emailService.sendNotificationEmailVerification(notificationEmail, code, user.name);
+  if (recentAttempts >= 3) {
+    throw new ValidationError('Too many verification requests. Please try again in 15 minutes.');
+  }
 
-  logger.info({ userId: user.id, email: notificationEmail }, 'Notification email verification code sent');
+  // Delete any existing NOTIFICATION_EMAIL OTPs for this user
+  await prisma.otpVerification.deleteMany({
+    where: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+    },
+  });
+
+  // Generate 6-digit OTP
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+  // Hash the OTP (using bcrypt)
+  const hashedCode = await bcrypt.hash(code, 10);
+
+  // Save to database
+  await prisma.otpVerification.create({
+    data: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+      hashedCode,
+      metadata: { newEmail: notificationEmail },
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
+      verifyAttempts: 0,
+    },
+  });
+
+  // Send email with OTP
+  await emailService.sendNotificationEmailVerification(notificationEmail, code, req.user!.name);
+
+  logger.info({ userId, email: notificationEmail }, 'Notification email verification code sent');
 
   res.json(apiResponse(null, 'Verification code sent to notification email'));
 }));
 
 // POST /api/auth/notification-email/confirm
 router.post('/notification-email/confirm', authenticate, catchAsync(async (req: AuthRequest, res) => {
-  const user = req.user!;
+  const userId = req.user!.id;
   const { code } = req.body;
 
   // Validation
@@ -527,28 +569,54 @@ router.post('/notification-email/confirm', authenticate, catchAsync(async (req: 
     throw new ValidationError('Verification code is required');
   }
 
-  // Get stored verification data
-  const verificationData = notificationEmailVerifications.get(user.id);
+  // Find the OTP record
+  const otpRecord = await prisma.otpVerification.findFirst({
+    where: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+    },
+  });
 
-  if (!verificationData) {
-    throw new ValidationError('No verification in progress. Please request a new code.');
+  if (!otpRecord) {
+    throw new ValidationError('No pending verification found. Please request a new code.');
   }
 
-  // Check if code expired
-  if (new Date() > verificationData.expiresAt) {
-    notificationEmailVerifications.delete(user.id);
-    throw new ValidationError('Verification code expired. Please request a new code.');
+  // Check if expired
+  if (otpRecord.expiresAt < new Date()) {
+    await prisma.otpVerification.delete({ where: { id: otpRecord.id } });
+    throw new ValidationError('Verification code has expired. Please request a new code.');
   }
 
-  // Verify code
-  if (code !== verificationData.code) {
-    throw new ValidationError('Invalid verification code');
+  // Check if too many failed attempts
+  if (otpRecord.verifyAttempts >= 5) {
+    await prisma.otpVerification.delete({ where: { id: otpRecord.id } });
+    throw new ValidationError('Too many failed attempts. Please request a new code.');
   }
 
-  // Update notification email in database
+  // Verify the code (compare hashes)
+  const codeMatches = await bcrypt.compare(code, otpRecord.hashedCode);
+
+  if (!codeMatches) {
+    // Increment failed attempts
+    await prisma.otpVerification.update({
+      where: { id: otpRecord.id },
+      data: {
+        verifyAttempts: { increment: 1 },
+      },
+    });
+
+    const remainingAttempts = 5 - (otpRecord.verifyAttempts + 1);
+    throw new ValidationError(
+      `Invalid verification code. ${remainingAttempts} attempt${remainingAttempts !== 1 ? 's' : ''} remaining.`
+    );
+  }
+
+  // Code is valid - update the notification email
+  const newEmail = (otpRecord.metadata as any).newEmail;
+
   const updatedUser = await prisma.user.update({
-    where: { id: user.id },
-    data: { notificationEmail: verificationData.email },
+    where: { id: userId },
+    data: { notificationEmail: newEmail },
     select: {
       id: true,
       email: true,
@@ -557,15 +625,94 @@ router.post('/notification-email/confirm', authenticate, catchAsync(async (req: 
       phone: true,
       businessName: true,
       taxId: true,
-    }
+    },
   });
 
-  // Clean up verification data
-  notificationEmailVerifications.delete(user.id);
+  // Delete the OTP record
+  await prisma.otpVerification.delete({ where: { id: otpRecord.id } });
 
-  logger.info({ userId: user.id, notificationEmail: verificationData.email }, 'Notification email updated successfully');
+  logger.info({ userId, notificationEmail: newEmail }, 'Notification email updated successfully');
 
   res.json(apiResponse(updatedUser, 'Notification email verified and updated successfully'));
+}));
+
+// POST /api/auth/notification-email/resend
+router.post('/notification-email/resend', authenticate, catchAsync(async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const { notificationEmail } = req.body;
+
+  // Validate email from REQUEST BODY
+  if (!notificationEmail || typeof notificationEmail !== 'string') {
+    throw new ValidationError('Notification email is required');
+  }
+
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(notificationEmail)) {
+    throw new ValidationError('Invalid email format');
+  }
+
+  // Rate limiting: Check recent OTP requests (max 3 per 15 minutes)
+  const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+  const recentAttempts = await prisma.otpVerification.count({
+    where: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+      createdAt: { gte: fifteenMinutesAgo },
+    },
+  });
+
+  if (recentAttempts >= 3) {
+    throw new ValidationError('Too many verification requests. Please try again in 15 minutes.');
+  }
+
+  // Find existing OTP record
+  const existingOtp = await prisma.otpVerification.findFirst({
+    where: {
+      userId,
+      type: 'NOTIFICATION_EMAIL',
+    },
+  });
+
+  if (!existingOtp) {
+    throw new ValidationError('No pending verification found. Please initiate a new request.');
+  }
+
+  // Verify provided email matches stored email
+  const storedEmail = (existingOtp.metadata as any)?.newEmail;
+  if (storedEmail !== notificationEmail) {
+    throw new ValidationError('Email does not match pending verification. Please start a new request.');
+  }
+
+  // Check if it's too soon to resend (prevent spam - min 1 minute between resends)
+  const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+  if (existingOtp.createdAt > oneMinuteAgo) {
+    const secondsToWait = Math.ceil((60 - (Date.now() - existingOtp.createdAt.getTime()) / 1000));
+    throw new ValidationError(`Please wait ${secondsToWait} seconds before requesting a new code.`);
+  }
+
+  // Generate new 6-digit OTP
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+
+  // Hash the new OTP
+  const hashedCode = await bcrypt.hash(code, 10);
+
+  // Update the existing record
+  await prisma.otpVerification.update({
+    where: { id: existingOtp.id },
+    data: {
+      hashedCode,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // New 10 min expiration
+      verifyAttempts: 0, // Reset failed attempts
+      createdAt: new Date(), // Update timestamp for rate limiting
+    },
+  });
+
+  // Send new code
+  await emailService.sendNotificationEmailVerification(notificationEmail, code, req.user!.name);
+
+  logger.info({ userId, email: notificationEmail }, 'Notification email verification code resent');
+
+  res.json(apiResponse(null, 'New verification code sent to notification email'));
 }));
 
 export default router;

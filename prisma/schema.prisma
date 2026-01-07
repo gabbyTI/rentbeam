@@ -24,6 +24,7 @@ model User {
 
   landlordAccount   LandlordAccount?
   tenantMemberships TenantMembership[]
+  otpVerifications  OtpVerification[]
 
   @@map("users")
 }
@@ -164,4 +165,24 @@ enum PaymentStatus {
   PENDING
   SUCCEEDED
   FAILED
+}
+
+model OtpVerification {
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type           OtpType
+  hashedCode     String
+  metadata       Json
+  expiresAt      DateTime
+  verifyAttempts Int      @default(0)
+  createdAt      DateTime @default(now())
+
+  @@index([userId, type])
+  @@index([expiresAt])
+  @@map("otp_verifications")
+}
+
+enum OtpType {
+  NOTIFICATION_EMAIL
 }
