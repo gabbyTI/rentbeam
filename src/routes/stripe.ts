@@ -49,6 +49,8 @@ router.post(
         where: { id: landlord.id },
         data: { stripeAccountId },
       });
+
+      logger.info({ userId, landlordId: landlord.id, stripeAccountId }, 'Stripe Connect account created');
     }
 
     // Create account link with simplified collection
@@ -269,6 +271,8 @@ router.post(
     // Create SetupIntent
     const setupIntent = await stripeService.createSetupIntent(customerId);
 
+    logger.info({ userId, tenantId: membership.id, customerId }, 'Setup intent created for payment method');
+
     res.json(
       apiResponse({
         clientSecret: setupIntent.client_secret,
@@ -346,6 +350,14 @@ router.post(
       },
     });
 
+    logger.info({ 
+      userId, 
+      tenantId: membership.id, 
+      amount: fees.totalAmount, 
+      month,
+      paymentIntentId: paymentIntent.id 
+    }, 'Manual payment intent created');
+
     res.json(
       apiResponse({
         clientSecret: paymentIntent.client_secret,
@@ -392,6 +404,8 @@ router.delete(
         autopayConsentAt: null,
       },
     });
+
+    logger.info({ userId, tenantId: membership.id }, 'Payment method removed');
 
     res.json(apiResponse({ success: true }));
   })

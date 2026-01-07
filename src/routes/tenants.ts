@@ -170,6 +170,13 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     // Don't fail the request if email fails - tenant is still created
   }
 
+  logger.info({ 
+    tenantId: membership.id, 
+    email, 
+    unitId, 
+    landlordId: landlord.id 
+  }, 'Tenant created and invite sent');
+
   res.status(201).json(apiResponse({
     membership,
     inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`
@@ -226,6 +233,8 @@ router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
     logger.error({ error, email: membership.user.email }, 'Failed to resend invite email');
     throw new Error('Failed to send invite email');
   }
+
+  logger.info({ tenantId: id, email: membership.user.email }, 'Tenant invite resent');
 
   res.json(apiResponse(null, 'Invite resent successfully'));
 }));
@@ -325,6 +334,13 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
       // Don't fail the move-out if Cognito deletion fails
     }
   }
+
+  logger.info({ 
+    tenantId: id, 
+    email: membership.user.email, 
+    moveOutDate: parsedMoveOutDate,
+    hasOutstandingBalance 
+  }, 'Tenant moved out');
 
   res.json(apiResponse({
     membership: updatedMembership,

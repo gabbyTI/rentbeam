@@ -60,6 +60,8 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
     }
   });
 
+  logger.info({ userId: user.id, email, landlordId: user.landlordAccount?.id }, 'Landlord signup successful');
+
   res.status(201).json(apiResponse({
     user: {
       id: user.id,
@@ -125,6 +127,8 @@ router.post('/login', catchAsync(async (req, res) => {
     throw new NotFoundError('User not found');
   }
 
+  logger.info({ userId: user.id, email }, 'User login successful');
+
   res.json(apiResponse({
     tokens: {
       idToken: authResult.IdToken,
@@ -184,6 +188,8 @@ router.post('/forgot-password', catchAsync(async (req, res) => {
   // Send password reset code via Cognito
   await cognitoService.forgotPassword(email);
 
+  logger.info({ email }, 'Password reset code sent');
+
   res.json(apiResponse(
     { message: 'Password reset code sent to email' },
     'If the email exists, a reset code has been sent'
@@ -200,6 +206,8 @@ router.post('/reset-password', catchAsync(async (req, res) => {
 
   // Confirm password reset
   await cognitoService.resetPassword(email, code, newPassword);
+
+  logger.info({ email }, 'Password reset completed successfully');
 
   res.json(apiResponse(
     { message: 'Password reset successful' },
@@ -223,6 +231,8 @@ router.post('/change-password', catchAsync(async (req, res) => {
 
   // Change password via Cognito (validates accessToken internally)
   await cognitoService.changePassword(accessToken, oldPassword, newPassword);
+
+  logger.info('Password changed successfully');
 
   res.json(apiResponse(
     { message: 'Password changed successfully' },

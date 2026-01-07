@@ -123,6 +123,8 @@ router.post('/:token/accept', catchAsync(async (req, res) => {
     // Login and get tokens
     const authResult = await cognitoService.login(user.email, password);
 
+    logger.info({ userId: user.id, email: user.email, tenantId: membership.id }, 'Tenant invite accepted and account created');
+
     res.json(apiResponse({
       tokens: {
         idToken: authResult?.IdToken,
