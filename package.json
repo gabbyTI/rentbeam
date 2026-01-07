@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts | npx pino-pretty",
     "build": "prisma generate && tsc",
-    "start": "node dist/index.js",
+    "start": "prisma migrate deploy && node dist/index.jss",
     "test": "prisma generate --schema=./tests/schema.test.prisma && jest --detectOpenHandles --forceExit",
     "test:watch": "jest --watch",
     "test:cov": "prisma generate --schema=./tests/schema.test.prisma && jest --coverage --detectOpenHandles --forceExit",
