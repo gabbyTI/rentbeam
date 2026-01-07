@@ -5,6 +5,7 @@ import prisma from '../lib/prisma.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import logger from '../lib/logger.js';
 
 const router = Router();
 

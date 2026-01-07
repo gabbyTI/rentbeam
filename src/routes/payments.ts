@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
+import { paymentsTotal, paymentsAmountCents } from '../lib/metrics.js';
 import prisma from '../lib/prisma.js';
 import { ValidationError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
@@ -159,6 +160,10 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     amount: parsedAmount, 
     month 
   }, 'Manual payment recorded');
+
+  // Record metrics
+  paymentsTotal.inc({ method: 'MANUAL', status: 'success' });
+  paymentsAmountCents.inc({ method: 'MANUAL' }, parsedAmount * 100);
 
   res.status(201).json(apiResponse(payment, 'Payment recorded successfully'));
 }));

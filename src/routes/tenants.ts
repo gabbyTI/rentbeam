@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import prisma from '../lib/prisma.js';
+import { invitesTotal, updateTenantMetrics } from '../lib/metrics.js';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 import prisma from '../lib/prisma.js';
 import { ForbiddenError, ValidationError, NotFoundError } from '../lib/errors.js';
@@ -177,6 +179,11 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     landlordId: landlord.id 
   }, 'Tenant created and invite sent');
 
+  // Record metrics
+  invitesTotal.inc({ status: 'sent' });
+  await updateTenantMetrics(prisma);
+
+
   res.status(201).json(apiResponse({
     membership,
     inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`
@@ -341,6 +348,10 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
     moveOutDate: parsedMoveOutDate,
     hasOutstandingBalance 
   }, 'Tenant moved out');
+
+  // Update tenant metrics
+  await updateTenantMetrics(prisma);
+
 
   res.json(apiResponse({
     membership: updatedMembership,
@@ -604,6 +615,9 @@ router.patch('/:id/autopay', catchAsync(async (req: AuthRequest, res) => {
     autopayEnabled,
     userId: user.id 
   }, `Autopay ${autopayEnabled ? 'enabled' : 'disabled'}`);
+
+  // Update autopay metrics
+  await updateTenantMetrics(prisma);
 
   res.json(apiResponse(updatedMembership, `Autopay ${autopayEnabled ? 'enabled' : 'disabled'} successfully`));
 }));

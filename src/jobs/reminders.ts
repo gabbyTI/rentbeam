@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { emailService } from '../services/email.js';
+import { cronExecutionsTotal, cronLastRunTimestamp } from '../lib/metrics.js';
 import logger from '../lib/logger.js';
 
 interface ReminderResult {
@@ -17,6 +18,14 @@ interface ReminderResult {
  * Called daily by cron job - sends reminders 3 days before due date
  */
 export async function sendPaymentReminders(): Promise<ReminderResult> {
+  const result: ReminderResult = {
+    processed: 0,
+    sent: 0,
+    skipped: 0,
+    errors: [],
+  };
+
+  try {
   const today = new Date();
   const currentDay = today.getDate();
   const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
@@ -33,14 +42,6 @@ export async function sendPaymentReminders(): Promise<ReminderResult> {
     currentMonth 
   }, 'Starting payment reminder processing');
 
-  const result: ReminderResult = {
-    processed: 0,
-    sent: 0,
-    skipped: 0,
-    errors: [],
-  };
-
-  try {
     // Find all active tenants whose rent is due in 3 days (only in properties accepting online payments)
     const eligibleTenants = await prisma.tenantMembership.findMany({
       where: {
@@ -140,10 +141,12 @@ export async function sendPaymentReminders(): Promise<ReminderResult> {
     }
 
     logger.info(result, 'Payment reminder processing completed');
+    return result;
   } catch (error: any) {
     logger.error({ error: error.message }, 'Fatal error during reminder processing');
     throw error;
+  } finally {
+    cronExecutionsTotal.inc({ job: "reminders", status: "success" });
+    cronLastRunTimestamp.set({ job: "reminders" }, Math.floor(Date.now() / 1000));
   }
-
-  return result;
 }

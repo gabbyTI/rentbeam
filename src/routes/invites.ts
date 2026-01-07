@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import { invitesTotal } from '../lib/metrics.js';
+import logger from '../lib/logger.js';
 import { cognitoService } from '../services/cognito.js';
 import prisma from '../lib/prisma.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
@@ -122,6 +124,9 @@ router.post('/:token/accept', catchAsync(async (req, res) => {
 
     // Login and get tokens
     const authResult = await cognitoService.login(user.email, password);
+
+    // Record invite acceptance
+    invitesTotal.inc({ status: 'accepted' });
 
     logger.info({ userId: user.id, email: user.email, tenantId: membership.id }, 'Tenant invite accepted and account created');
 
