@@ -40,7 +40,7 @@ export const calculateOccupancyRate = (
   const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
   const occupied = activeTenants.length;
   const vacant = total - occupied;
-  const rate = total > 0 ? Math.round((occupied / total) * 100) : 0;
+  const rate = total > 0 ? Math.round((occupied / total) * 100) : 100;
 
   return { rate, occupied, total, vacant };
 };
@@ -53,11 +53,23 @@ export const calculateMonthlyRevenue = (
   payments: Payment[],
   month: string
 ): RevenueMetrics => {
-  // Calculate expected revenue from active tenants
+  const [year, monthNum] = month.split('-').map(Number);
   const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
-  const expected = activeTenants.reduce((sum, t) => 
-    sum + parseFloat(t.unit.rentAmount.toString()), 0
-  );
+  
+  // Calculate expected revenue - only from tenants expected to pay this month
+  const expected = activeTenants.reduce((sum, tenant) => {
+    const dueDay = tenant.unit.dueDay;
+    const dueDate = new Date(year, monthNum - 1, dueDay);
+    const paymentWindowOpenDate = new Date(dueDate);
+    paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
+    const moveInDate = new Date(tenant.moveInDate);
+    
+    // Only count tenant if they moved in before payment window opened
+    if (moveInDate <= paymentWindowOpenDate) {
+      return sum + parseFloat(tenant.unit.rentAmount.toString());
+    }
+    return sum;
+  }, 0);
 
   // Calculate collected revenue for this month
   const monthPayments = payments.filter(p => p.month === month);
@@ -65,7 +77,7 @@ export const calculateMonthlyRevenue = (
     sum + parseFloat(p.amount.toString()), 0
   );
 
-  const rate = expected > 0 ? Math.round((collected / expected) * 100) : 0;
+  const rate = expected > 0 ? Math.round((collected / expected) * 100) : 100;
 
   return { collected, expected, rate };
 };
@@ -99,7 +111,15 @@ export const getOutstandingBalance = (
       const graceDueDate = new Date(dueDate);
       graceDueDate.setDate(graceDueDate.getDate() + gracePeriodDays);
 
-      if (currentDate > graceDueDate) {
+      // Check if tenant moved in after payment window opened
+      const paymentWindowOpenDate = new Date(dueDate);
+      paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
+      const moveInDate = new Date(tenant.moveInDate);
+
+      // Only count as outstanding if:
+      // 1. Past grace period
+      // 2. Tenant moved in before payment window opened
+      if (currentDate > graceDueDate && moveInDate <= paymentWindowOpenDate) {
         totalOutstanding += rentAmount;
         tenantsWithOutstanding++;
       }
@@ -134,7 +154,7 @@ export const getPaymentStatusBreakdown = (
     );
 
     if (payment) {
-      // Has payment - check if it was late
+      // Has payment - count it regardless of move-in date
       const dueDay = tenant.unit.dueDay;
       const dueDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), dueDay);
       const paymentDate = new Date(payment.date);
@@ -145,12 +165,22 @@ export const getPaymentStatusBreakdown = (
         paid++;
       }
     } else {
-      // No payment - check if pending or unpaid
+      // No payment - check if tenant should be expected to pay yet
       const dueDay = tenant.unit.dueDay;
       const gracePeriodDays = tenant.unit.gracePeriodDays || 0;
       const dueDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), dueDay);
       const graceDueDate = new Date(dueDate);
       graceDueDate.setDate(graceDueDate.getDate() + gracePeriodDays);
+
+      // Check if tenant moved in after payment window opened
+      const paymentWindowOpenDate = new Date(dueDate);
+      paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
+      const moveInDate = new Date(tenant.moveInDate);
+
+      // If tenant moved in after payment window opened, don't count them as overdue
+      if (moveInDate > paymentWindowOpenDate) {
+        return; // Skip this tenant - they're not expected to have paid yet
+      }
 
       if (currentDate <= dueDate) {
         pending++; // Not due yet

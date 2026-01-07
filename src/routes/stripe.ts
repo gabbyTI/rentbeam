@@ -39,7 +39,7 @@ router.post(
     if (!stripeAccountId) {
       const account = await stripeService.createConnectedAccount({
         email: landlord.user.email,
-        country: 'US',
+        country: 'CA', // Canada by default
       });
 
       stripeAccountId = account.id;
@@ -51,11 +51,15 @@ router.post(
       });
     }
 
-    // Create account link
+    // Create account link with simplified collection
     const accountLink = await stripeService.createAccountLink({
       accountId: stripeAccountId,
       refreshUrl,
       returnUrl,
+      collectionOptions: {
+        fields: 'eventually_due', // Only collect required fields
+        future_requirements: 'omit', // Don't show future requirements yet
+      },
     });
 
     res.json(
@@ -93,6 +97,9 @@ router.get(
           chargesEnabled: false,
           detailsSubmitted: false,
           payoutsEnabled: false,
+          requirementsDue: [],
+          requirementsPending: [],
+          disabledReason: null,
         })
       );
       return;

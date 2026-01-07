@@ -25,6 +25,7 @@ export interface CreateAccountLinkParams {
   accountId: string;
   refreshUrl: string;
   returnUrl: string;
+  collectionOptions?: Stripe.AccountLinkCreateParams.CollectionOptions;
 }
 
 class StripeService {
@@ -32,7 +33,7 @@ class StripeService {
    * Create an Express connected account
    */
   async createConnectedAccount(params: CreateConnectedAccountParams): Promise<Stripe.Account> {
-    const { email, country = 'US' } = params;
+    const { email, country = 'CA' } = params; // Default to Canada
 
     try {
       const account = await getStripeClient().accounts.create({
@@ -42,6 +43,12 @@ class StripeService {
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
+        },
+        business_type: 'individual', // Simplify for most landlords
+        business_profile: {
+          mcc: '6513', // Real Estate Agents and Managers - Rentals
+          url: 'https://renttrack.app', // Your app URL
+          product_description: 'Residential property rental services and rent collection',
         },
       });
 
@@ -58,7 +65,7 @@ class StripeService {
    * Create an account link for onboarding
    */
   async createAccountLink(params: CreateAccountLinkParams): Promise<Stripe.AccountLink> {
-    const { accountId, refreshUrl, returnUrl } = params;
+    const { accountId, refreshUrl, returnUrl, collectionOptions } = params;
 
     try {
       const accountLink = await getStripeClient().accountLinks.create({
@@ -66,6 +73,10 @@ class StripeService {
         refresh_url: refreshUrl,
         return_url: returnUrl,
         type: 'account_onboarding',
+        collection_options: collectionOptions || {
+          fields: 'eventually_due', // Only collect required fields
+          future_requirements: 'omit', // Don't show future requirements
+        },
       });
 
       return accountLink;
@@ -100,6 +111,9 @@ class StripeService {
     chargesEnabled: boolean;
     detailsSubmitted: boolean;
     payoutsEnabled: boolean;
+    requirementsDue: string[];
+    requirementsPending: string[];
+    disabledReason: string | null;
   }> {
     const account = await this.getAccount(accountId);
 
@@ -108,6 +122,9 @@ class StripeService {
       chargesEnabled: account.charges_enabled,
       detailsSubmitted: account.details_submitted,
       payoutsEnabled: account.payouts_enabled || false,
+      requirementsDue: account.requirements?.currently_due || [],
+      requirementsPending: account.requirements?.pending_verification || [],
+      disabledReason: account.requirements?.disabled_reason || null,
     };
   }
 

@@ -70,7 +70,8 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     data: {
       landlordId: landlord.id,
       name,
-      address
+      address,
+      acceptOnlinePayments: false // Default to manual payments
     }
   });
 
@@ -105,6 +106,11 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   if (name !== undefined) updateData.name = name;
   if (address !== undefined) updateData.address = address;
   if (acceptOnlinePayments !== undefined) {
+    // Require Stripe onboarding to enable online payments
+    if (acceptOnlinePayments === true && !landlord.payoutsEnabled) {
+      throw new ForbiddenError('Complete bank account setup to accept online payments');
+    }
+    
     updateData.acceptOnlinePayments = acceptOnlinePayments;
     
     // If disabling online payments, auto-disable autopay for all tenants in this property
