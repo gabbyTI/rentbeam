@@ -1,6 +1,6 @@
-# RentTrack Backend
+# RentBeam Backend
 
-Node.js + TypeScript backend for RentTrack application.
+Node.js + TypeScript backend for RentBeam application.
 
 ## Stack
 

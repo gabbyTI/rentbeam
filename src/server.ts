@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import pinoHttp from 'pino-http';
+import { APP_CONFIG } from './config/app.js';
 import promBundle from 'express-prom-bundle';
 import healthRoutes from './routes/health.js';
 import authRoutes from './routes/auth.js';
@@ -27,7 +28,7 @@ const metricsMiddleware = promBundle({
   includePath: true,
   includeStatusCode: true,
   includeUp: true,
-  customLabels: { app: 'renttrack-api' },
+  customLabels: { app: APP_CONFIG.metrics.appLabel },
   promClient: {
     collectDefaultMetrics: {},
   },

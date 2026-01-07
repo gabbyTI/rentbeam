@@ -1,4 +1,5 @@
 import Stripe from 'stripe';
+import { APP_CONFIG } from '../config/app.js';
 import { BadRequestError } from '../lib/errors.js';
 
 // Lazy-load Stripe client
@@ -47,7 +48,7 @@ class StripeService {
         business_type: 'individual', // Simplify for most landlords
         business_profile: {
           mcc: '6513', // Real Estate Agents and Managers - Rentals
-          url: 'https://renttrack.app', // Your app URL
+          url: APP_CONFIG.url, // Your app URL
           product_description: 'Residential property rental services and rent collection',
         },
       });

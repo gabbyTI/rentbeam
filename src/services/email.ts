@@ -1,3 +1,4 @@
+import { APP_CONFIG } from '../config/app.js';
 import nodemailer from 'nodemailer';
 import logger from '../lib/logger.js';
 
@@ -14,11 +15,11 @@ export const emailService = {
 
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: email,
-        subject: `You've been invited to RentTrack by ${landlordName}`,
+        subject: `You've been invited to RentBeam by ${landlordName}`,
         html: `
-          <h2>Welcome to RentTrack!</h2>
+          <h2>Welcome to RentBeam!</h2>
           <p>${landlordName} has invited you to join as a tenant.</p>
           <p>Click the link below to accept the invite and set up your account:</p>
           <a href="${inviteLink}" style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0;">Accept Invite</a>
@@ -28,7 +29,7 @@ export const emailService = {
           <p style="color: #666; font-size: 12px;">If you didn't expect this email, you can safely ignore it.</p>
         `,
         text: `
-You've been invited to RentTrack by ${landlordName}!
+You've been invited to RentBeam by ${landlordName}!
 
 Click this link to accept the invite and set up your account:
 ${inviteLink}
@@ -56,7 +57,7 @@ If you didn't expect this email, you can safely ignore it.
   }): Promise<void> {
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: params.email,
         subject: 'Payment Successful - Rent Payment Received',
         html: `
@@ -90,7 +91,7 @@ If you didn't expect this email, you can safely ignore it.
             </table>
           </div>
 
-          <p>Thank you for using RentTrack!</p>
+          <p>Thank you for using RentBeam!</p>
           <hr>
           <p style="color: #666; font-size: 12px;">Questions? Contact your landlord or visit your dashboard.</p>
         `,
@@ -108,7 +109,7 @@ Processing Fee: $${params.processingFee}
 Total Paid: $${params.totalAmount}
 Date: ${params.paymentDate}
 
-Thank you for using RentTrack!
+Thank you for using RentBeam!
         `
       });
 
@@ -135,7 +136,7 @@ Thank you for using RentTrack!
 
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: params.email,
         subject: '⚠️ Payment Failed - Action Required',
         html: `
@@ -200,7 +201,7 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
   }): Promise<void> {
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: params.email,
         subject: 'Autopay Disabled - Action Required',
         html: `
@@ -257,7 +258,7 @@ Update Payment Method: ${process.env.FRONTEND_URL}/tenant/autopay
   }): Promise<void> {
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: params.email,
         subject: 'Payment Method Added Successfully',
         html: `
@@ -310,7 +311,7 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
   async sendEmailVerificationCode(email: string, code: string, userName: string): Promise<void> {
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: email,
         subject: 'Verify Your New Email Address',
         html: `
@@ -327,7 +328,7 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
           <p><strong>If you didn't request this change, please ignore this email and your account will remain secure.</strong></p>
 
           <hr>
-          <p style="color: #666; font-size: 12px;">This is an automated email from RentTrack. Please do not reply.</p>
+          <p style="color: #666; font-size: 12px;">This is an automated email from RentBeam. Please do not reply.</p>
         `,
         text: `
 Email Verification Code
@@ -367,7 +368,7 @@ If you didn't request this change, please ignore this email and your account wil
 
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: params.email,
         subject: '🔔 Rent Payment Due Soon',
         html: `
@@ -419,9 +420,9 @@ ${!params.autopayEnabled ? 'Pay Now: ' + process.env.FRONTEND_URL + '/tenant/das
   async sendNotificationEmailVerification(email: string, code: string, userName: string): Promise<void> {
     try {
       await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@renttrack.app',
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
         to: email,
-        subject: 'Verify Your Notification Email - RentTrack',
+        subject: 'Verify Your Notification Email - RentBeam',
         html: `
           <h2>📧 Verify Your Notification Email</h2>
           <p>Hi ${userName},</p>
@@ -434,7 +435,7 @@ ${!params.autopayEnabled ? 'Pay Now: ' + process.env.FRONTEND_URL + '/tenant/das
             </div>
           </div>
 
-          <p>Enter this code in the RentTrack app to confirm your notification email address.</p>
+          <p>Enter this code in the RentBeam app to confirm your notification email address.</p>
           <p><strong>This code will expire in 15 minutes.</strong></p>
 
           <hr>
@@ -449,7 +450,7 @@ You requested to set this email address as your notification email for payment a
 
 Your Verification Code: ${code}
 
-Enter this code in the RentTrack app to confirm your notification email address.
+Enter this code in the RentBeam app to confirm your notification email address.
 
 This code will expire in 15 minutes.
 

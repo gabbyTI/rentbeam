@@ -1,8 +1,8 @@
-# RentTrack - Project Context & Backend Architecture
+# RentBeam - Project Context & Backend Architecture
 
 ## App Overview
 
-RentTrack is a property management application that enables landlords to manage properties, units, and tenants while allowing tenants to track and pay rent. The application supports multi-property tenant relationships, meaning a single user can be a tenant at multiple properties simultaneously.
+RentBeam is a property management application that enables landlords to manage properties, units, and tenants while allowing tenants to track and pay rent. The application supports multi-property tenant relationships, meaning a single user can be a tenant at multiple properties simultaneously.
 
 ## Core Features
 
@@ -228,7 +228,7 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
 
 ```env
 # Database
-DATABASE_URL="postgresql://postgres:password@10.0.0.107:5432/renttrack"
+DATABASE_URL="postgresql://postgres:password@10.0.0.107:5432/rentbeam"
 
 # AWS Cognito
 COGNITO_USER_POOL_ID="your-user-pool-id"
