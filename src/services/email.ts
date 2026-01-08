@@ -1,24 +1,16 @@
 import { APP_CONFIG } from '../config/app.js';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import logger from '../lib/logger.js';
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'localhost',
-  port: parseInt(process.env.SMTP_PORT || '1025'),
-  secure: process.env.SMTP_SECURE === 'true',
-  auth: process.env.SMTP_USER ? {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  } : undefined,
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const emailService = {
   async sendTenantInvite(email: string, landlordName: string, inviteToken: string): Promise<void> {
     const inviteLink = `${process.env.FRONTEND_URL}/invite/${inviteToken}`;
 
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: email,
         subject: `You've been invited to RentBeam by ${landlordName}`,
         html: `
@@ -59,8 +51,8 @@ If you didn't expect this email, you can safely ignore it.
     unitName: string;
   }): Promise<void> {
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: params.email,
         subject: 'Payment Successful - Rent Payment Received',
         html: `
@@ -138,8 +130,8 @@ Thank you for using RentBeam!
       : '';
 
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: params.email,
         subject: '⚠️ Payment Failed - Action Required',
         html: `
@@ -203,8 +195,8 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
     unitName: string;
   }): Promise<void> {
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: params.email,
         subject: 'Autopay Disabled - Action Required',
         html: `
@@ -260,8 +252,8 @@ Update Payment Method: ${process.env.FRONTEND_URL}/tenant/autopay
     unitName: string;
   }): Promise<void> {
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: params.email,
         subject: 'Payment Method Added Successfully',
         html: `
@@ -313,8 +305,8 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
 
   async sendEmailVerificationCode(email: string, code: string, userName: string): Promise<void> {
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: email,
         subject: 'Verify Your New Email Address',
         html: `
@@ -370,8 +362,8 @@ If you didn't request this change, please ignore this email and your account wil
       : '<p>Please remember to pay your rent on or before the due date to avoid late fees.</p>';
 
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: params.email,
         subject: '🔔 Rent Payment Due Soon',
         html: `
@@ -422,8 +414,8 @@ ${!params.autopayEnabled ? 'Pay Now: ' + process.env.FRONTEND_URL + '/tenant/das
 
   async sendNotificationEmailVerification(email: string, code: string, userName: string): Promise<void> {
     try {
-      await transporter.sendMail({
-        from: process.env.EMAIL_FROM || 'noreply@rentbeam.app',
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
         to: email,
         subject: 'Verify Your Notification Email - RentBeam',
         html: `
