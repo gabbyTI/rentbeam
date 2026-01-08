@@ -148,8 +148,9 @@ RentBeam is a modern rent collection platform designed for small-to-medium landl
 ### Current
 - **Stripe** - Payment processing and payouts
 - **AWS Cognito** - User authentication
-- **AWS SES** - Transactional emails
+- **Resend API** - Transactional emails
 - **Neon PostgreSQL** - Serverless database
+- **Railweay** - Backend Hosting
 
 ### Planned
 - **Plaid** - Bank account verification for ACH payments
