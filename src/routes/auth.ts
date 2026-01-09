@@ -497,8 +497,17 @@ router.delete(
       logger.info({ userId }, 'Database records deleted successfully');
     });
 
+    // Check if user has active tenant memberships before deleting Cognito
+    const activeTenantMemberships = await prisma.tenantMembership.count({
+      where: {
+        userId,
+        status: 'ACTIVE'
+      }
+    });
+
     // Optional: Delete from Cognito (do this after DB to ensure DB is cleaned up even if Cognito fails)
-    if (userEmail) {
+    // Only delete Cognito if no active tenant memberships
+    if (userEmail && activeTenantMemberships === 0) {
       try {
         await cognitoService.deleteUser(userEmail);
         logger.info({ email: userEmail }, 'Cognito user deleted successfully');
@@ -506,6 +515,11 @@ router.delete(
         // Log warning but don't fail the request - DB is already cleaned up
         logger.warn({ email: userEmail, error: err.message }, 'Failed to delete Cognito user');
       }
+    } else if (activeTenantMemberships > 0) {
+      logger.info({ 
+        email: userEmail, 
+        activeTenantMemberships 
+      }, 'Skipped Cognito deletion - user has active tenant memberships');
     }
 
     res.json(apiResponse(null, 'Account deleted successfully'));

@@ -330,8 +330,21 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
     }
   });
 
-  // Delete Cognito user if exists
-  if (membership.user.cognitoId) {
+  // Check if user has other active memberships before deleting Cognito
+  const otherMemberships = await prisma.tenantMembership.count({
+    where: {
+      userId: membership.userId,
+      status: 'ACTIVE',
+      id: { not: id } // Exclude current membership
+    }
+  });
+
+  const landlordAccount = await prisma.landlordAccount.findUnique({
+    where: { userId: membership.userId }
+  });
+
+  // Only delete Cognito if no other active memberships and no landlord account
+  if (otherMemberships === 0 && !landlordAccount && membership.user.cognitoId) {
     try {
       await cognitoService.deleteUser(membership.user.email);
       logger.info({ email: membership.user.email, cognitoId: membership.user.cognitoId }, 'Deleted Cognito user on move-out');
@@ -339,6 +352,12 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
       logger.error({ error, email: membership.user.email }, 'Failed to delete Cognito user on move-out');
       // Don't fail the move-out if Cognito deletion fails
     }
+  } else {
+    logger.info({ 
+      email: membership.user.email, 
+      otherMemberships, 
+      hasLandlordAccount: !!landlordAccount 
+    }, 'Skipped Cognito deletion - user has other active accounts');
   }
 
   logger.info({ 
