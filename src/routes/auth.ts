@@ -20,9 +20,12 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
     throw new ValidationError('Email, password, and name are required');
   }
 
+  // Normalize email to lowercase
+  const normalizedEmail = email.toLowerCase().trim();
+
   // Check if user already exists
   const existingUser = await prisma.user.findUnique({
-    where: { email }
+    where: { email: normalizedEmail }
   });
 
   if (existingUser) {
@@ -32,14 +35,14 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
   // Create Cognito user (handle if already exists)
   let cognitoId: string;
   try {
-    cognitoId = await cognitoService.createUser(email, password, name);
+    cognitoId = await cognitoService.createUser(normalizedEmail, password, name);
   } catch (error: any) {
     if (error.name === 'UsernameExistsException') {
       // Cognito user exists but database user doesn't - this can happen after DB reset
       // Delete the Cognito user and recreate to ensure consistency
-      logger.warn({ email }, 'Cognito user exists without database record, deleting and recreating');
-      await cognitoService.deleteUser(email);
-      cognitoId = await cognitoService.createUser(email, password, name);
+      logger.warn({ email: normalizedEmail }, 'Cognito user exists without database record, deleting and recreating');
+      await cognitoService.deleteUser(normalizedEmail);
+      cognitoId = await cognitoService.createUser(normalizedEmail, password, name);
     } else {
       throw error;
     }
@@ -49,7 +52,7 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
   const user = await prisma.user.create({
     data: {
       cognitoId,
-      email,
+      email: normalizedEmail,
       name,
       landlordAccount: {
         create: {}
@@ -60,7 +63,7 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
     }
   });
 
-  logger.info({ userId: user.id, email, landlordId: user.landlordAccount?.id }, 'Landlord signup successful');
+  logger.info({ userId: user.id, email: normalizedEmail, landlordId: user.landlordAccount?.id }, 'Landlord signup successful');
 
   res.status(201).json(apiResponse({
     user: {
@@ -80,10 +83,13 @@ router.post('/login', catchAsync(async (req, res) => {
     throw new ValidationError('Email and password are required');
   }
 
+  // Normalize email to lowercase (Cognito is case-insensitive)
+  const normalizedEmail = email.toLowerCase().trim();
+
   // Authenticate with Cognito
   let authResult;
   try {
-    authResult = await cognitoService.login(email, password);
+    authResult = await cognitoService.login(normalizedEmail, password);
   } catch (error: any) {
     // Handle specific Cognito errors
     if (error.name === 'NotAuthorizedException') {
@@ -105,9 +111,9 @@ router.post('/login', catchAsync(async (req, res) => {
     throw new UnauthorizedError('Login failed');
   }
 
-  // Get user from database
+  // Get user from database using normalized email
   const user = await prisma.user.findUnique({
-    where: { email },
+    where: { email: normalizedEmail },
     include: {
       landlordAccount: true,
       tenantMemberships: {
@@ -127,7 +133,7 @@ router.post('/login', catchAsync(async (req, res) => {
     throw new NotFoundError('User not found');
   }
 
-  logger.info({ userId: user.id, email }, 'User login successful');
+  logger.info({ userId: user.id, email: normalizedEmail }, 'User login successful');
 
   res.json(apiResponse({
     tokens: {
