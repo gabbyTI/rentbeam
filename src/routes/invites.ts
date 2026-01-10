@@ -42,10 +42,14 @@ router.get('/:token', catchAsync(async (req, res) => {
     throw new ValidationError('Invite already accepted');
   }
 
+  // Check if user already has a Cognito account
+  const userExists = !!membership.user.cognitoId;
+
   res.json(apiResponse({
     email: membership.user.email,
     name: membership.user.name,
     landlordName: membership.unit.property.landlord.user.name,
+    userExists,
     unit: {
       name: membership.unit.name,
     },
@@ -62,10 +66,6 @@ router.get('/:token', catchAsync(async (req, res) => {
 router.post('/:token/accept', catchAsync(async (req, res) => {
   const { token } = req.params;
   const { password } = req.body;
-
-  if (!password) {
-    throw new ValidationError('Password is required');
-  }
 
   // Find membership
   const membership = await prisma.tenantMembership.findUnique({
@@ -84,6 +84,11 @@ router.post('/:token/accept', catchAsync(async (req, res) => {
   }
 
   const user = membership.user;
+
+  // Conditional password validation
+  if (!user.cognitoId && !password) {
+    throw new ValidationError('Password is required for new users');
+  }
 
   // Check if user already has Cognito account
   if (user.cognitoId) {
