@@ -22,9 +22,20 @@ model User {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  landlordAccount   LandlordAccount?
-  tenantMemberships TenantMembership[]
-  otpVerifications  OtpVerification[]
+  // Subscription fields
+  stripeCustomerId     String?
+  stripeSubscriptionId String?   @unique
+  subscriptionStatus   String? // active, canceled, past_due, incomplete, trialing
+  planType             String    @default("free") // free, starter, growth, professional
+  unitLimit            Int       @default(3)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean   @default(false)
+
+  landlordAccount     LandlordAccount?
+  tenantMemberships   TenantMembership[]
+  otpVerifications    OtpVerification[]
+  subscriptionHistory SubscriptionHistory[]
 
   @@map("users")
 }
@@ -185,4 +196,20 @@ model OtpVerification {
 
 enum OtpType {
   NOTIFICATION_EMAIL
+}
+
+model SubscriptionHistory {
+  id            String   @id @default(uuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType     String // created, upgraded, downgraded, canceled, payment_failed, reactivated
+  fromPlan      String? // previous plan (for upgrades/downgrades)
+  toPlan        String? // new plan
+  stripeEventId String? // Stripe event ID for idempotency
+  metadata      Json? // Additional event data
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("subscription_history")
 }
