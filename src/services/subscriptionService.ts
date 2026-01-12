@@ -1,0 +1,448 @@
+import Stripe from 'stripe';
+import { PrismaClient } from '@prisma/client';
+import { STRIPE_CONFIG, STRIPE_PRICE_IDS, PlanType } from '../config/stripe.js';
+import { getPlan } from '../config/plans.js';
+import { getUnitCount } from '../utils/subscriptionHelpers.js';
+
+const stripe = new Stripe(STRIPE_CONFIG.secretKey, {
+  apiVersion: '2025-12-15.clover',
+});
+
+const prisma = new PrismaClient();
+
+/**
+ * Create a Stripe customer for a user
+ */
+export async function createCustomer(userId: string, email: string): Promise<string> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Check if customer already exists
+    if (user.stripeCustomerId) {
+      return user.stripeCustomerId;
+    }
+
+    // Create Stripe customer
+    const customer = await stripe.customers.create({
+      email: email,
+      name: user.name,
+      metadata: {
+        userId: userId,
+        landlordName: user.businessName || user.name,
+      }
+    });
+
+    // Save customer ID to database
+    await prisma.user.update({
+      where: { id: userId },
+      data: { stripeCustomerId: customer.id }
+    });
+
+    return customer.id;
+  } catch (error) {
+    console.error('Error creating Stripe customer:', error);
+    throw error;
+  }
+}
+
+/**
+ * Create a subscription for a user
+ */
+export async function createSubscription(userId: string, priceId: string): Promise<Stripe.Subscription> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user) {
+      throw new Error('User not found');
+    }
+
+    // Ensure user has a Stripe customer ID
+    let customerId = user.stripeCustomerId;
+    if (!customerId) {
+      customerId = await createCustomer(userId, user.email);
+    }
+
+    // Get the plan type from price ID
+    let planType: PlanType = 'free';
+    if (priceId === STRIPE_PRICE_IDS.starter) planType = 'starter';
+    else if (priceId === STRIPE_PRICE_IDS.growth) planType = 'growth';
+    else if (priceId === STRIPE_PRICE_IDS.professional) planType = 'professional';
+
+    // Validate unit count against new plan
+    const unitCount = await getUnitCount(userId);
+    const plan = getPlan(planType);
+    
+    if (unitCount > plan.unitLimit) {
+      throw new Error(`You have ${unitCount} units but the ${plan.name} plan only allows ${plan.unitLimit} units.`);
+    }
+
+    // Create subscription
+    const subscription = await stripe.subscriptions.create({
+      customer: customerId,
+      items: [{ price: priceId }],
+      metadata: {
+        userId: userId,
+        planType: planType
+      },
+      payment_behavior: 'default_incomplete',
+      payment_settings: { save_default_payment_method: 'on_subscription' },
+      expand: ['latest_invoice.payment_intent'],
+    });
+
+    // Update user in database
+    await updateUserSubscription(userId, subscription);
+
+    // Log to subscription history
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: userId,
+        eventType: 'created',
+        fromPlan: user.planType,
+        toPlan: planType,
+        stripeEventId: subscription.id,
+      }
+    });
+
+    return subscription;
+  } catch (error) {
+    console.error('Error creating subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Upgrade a user's subscription to a higher tier
+ */
+export async function upgradeSubscription(userId: string, newPriceId: string): Promise<Stripe.Subscription> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || !user.stripeSubscriptionId) {
+      throw new Error('User or subscription not found');
+    }
+
+    // Get new plan type
+    let newPlanType: PlanType = 'free';
+    if (newPriceId === STRIPE_PRICE_IDS.starter) newPlanType = 'starter';
+    else if (newPriceId === STRIPE_PRICE_IDS.growth) newPlanType = 'growth';
+    else if (newPriceId === STRIPE_PRICE_IDS.professional) newPlanType = 'professional';
+
+    // Validate unit count
+    const unitCount = await getUnitCount(userId);
+    const newPlan = getPlan(newPlanType);
+    
+    if (unitCount > newPlan.unitLimit) {
+      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.unitLimit} units.`);
+    }
+
+    // Get current subscription
+    const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+
+    // Update subscription (prorate by default)
+    const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
+      items: [{
+        id: subscription.items.data[0].id,
+        price: newPriceId,
+      }],
+      proration_behavior: 'create_prorations',
+      metadata: {
+        ...subscription.metadata,
+        planType: newPlanType
+      }
+    });
+
+    // Update database
+    await updateUserSubscription(userId, updatedSubscription);
+
+    // Log to history
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: userId,
+        eventType: 'upgraded',
+        fromPlan: user.planType,
+        toPlan: newPlanType,
+        stripeEventId: updatedSubscription.id,
+      }
+    });
+
+    return updatedSubscription;
+  } catch (error) {
+    console.error('Error upgrading subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Downgrade a user's subscription (scheduled for end of period)
+ */
+export async function downgradeSubscription(userId: string, newPriceId: string): Promise<Stripe.Subscription> {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId }
+    });
+
+    if (!user || !user.stripeSubscriptionId) {
+      throw new Error('User or subscription not found');
+    }
+
+    // Get new plan type
+    let newPlanType: PlanType = 'free';
+    if (newPriceId === STRIPE_PRICE_IDS.starter) newPlanType = 'starter';
+    else if (newPriceId === STRIPE_PRICE_IDS.growth) newPlanType = 'growth';
+    else if (newPriceId === STRIPE_PRICE_IDS.professional) newPlanType = 'professional';
+
+    // Validate unit count
+    const unitCount = await getUnitCount(userId);
+    const newPlan = getPlan(newPlanType);
+    
+    if (unitCount > newPlan.unitLimit) {
+      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.unitLimit}. Please remove ${unitCount - newPlan.unitLimit} unit(s) before downgrading.`);
+    }
+
+    // Schedule downgrade at period end
+    const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
+    
+    const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
+      items: [{
+        id: subscription.items.data[0].id,
+        price: newPriceId,
+      }],
+      proration_behavior: 'none',
+      billing_cycle_anchor: 'unchanged',
+    });
+
+    // Log to history
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: userId,
+        eventType: 'downgraded',
+        fromPlan: user.planType,
+        toPlan: newPlanType,
+        stripeEventId: updatedSubscription.id,
+        metadata: { scheduledFor: 'end_of_period' }
+      }
+    });
+
+    return updatedSubscription;
+  } catch (error) {
+    console.error('Error downgrading subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Cancel a subscription (at end of period)
+ */
+export async function cancelSubscription(subscriptionId: string, immediately: boolean = false): Promise<Stripe.Subscription> {
+  try {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: !immediately,
+    });
+
+    if (immediately) {
+      await stripe.subscriptions.cancel(subscriptionId);
+    }
+
+    // Update user
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (user) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          cancelAtPeriodEnd: !immediately,
+          subscriptionStatus: immediately ? 'canceled' : subscription.status,
+        }
+      });
+
+      // Log to history
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: user.id,
+          eventType: 'canceled',
+          fromPlan: user.planType,
+          toPlan: immediately ? 'free' : user.planType,
+          stripeEventId: subscriptionId,
+          metadata: { immediately }
+        }
+      });
+    }
+
+    return subscription;
+  } catch (error) {
+    console.error('Error canceling subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Reactivate a canceled subscription (undo cancel_at_period_end)
+ */
+export async function reactivateSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+  try {
+    const subscription = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: false,
+    });
+
+    // Update user
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (user) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          cancelAtPeriodEnd: false,
+        }
+      });
+
+      // Log to history
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: user.id,
+          eventType: 'reactivated',
+          fromPlan: user.planType,
+          toPlan: user.planType,
+          stripeEventId: subscriptionId,
+        }
+      });
+    }
+
+    return subscription;
+  } catch (error) {
+    console.error('Error reactivating subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get Stripe Customer Portal URL for managing subscription
+ */
+export async function getCustomerPortalUrl(customerId: string, returnUrl: string): Promise<string> {
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+
+    return session.url;
+  } catch (error) {
+    console.error('Error creating portal session:', error);
+    throw error;
+  }
+}
+
+/**
+ * Update user subscription data in database from Stripe subscription object
+ */
+export async function updateUserSubscription(userId: string, subscription: Stripe.Subscription): Promise<void> {
+  try {
+    // Determine plan type from metadata or price ID
+    let planType: PlanType = 'free';
+    
+    if (subscription.metadata?.planType) {
+      planType = subscription.metadata.planType as PlanType;
+    } else {
+      const priceId = subscription.items.data[0]?.price.id;
+      if (priceId === STRIPE_PRICE_IDS.starter) planType = 'starter';
+      else if (priceId === STRIPE_PRICE_IDS.growth) planType = 'growth';
+      else if (priceId === STRIPE_PRICE_IDS.professional) planType = 'professional';
+    }
+
+    const plan = getPlan(planType);
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        stripeSubscriptionId: subscription.id,
+        subscriptionStatus: subscription.status,
+        planType: planType,
+        unitLimit: plan.unitLimit,
+        currentPeriodStart: new Date(subscription.items.data[0].current_period_start * 1000),
+        currentPeriodEnd: new Date(subscription.items.data[0].current_period_end * 1000),
+        cancelAtPeriodEnd: subscription.cancel_at_period_end,
+      }
+    });
+  } catch (error) {
+    console.error('Error updating user subscription:', error);
+    throw error;
+  }
+}
+
+/**
+ * Sync subscription status from Stripe (for manual refresh)
+ */
+export async function syncSubscriptionStatus(subscriptionId: string): Promise<void> {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (!user) {
+      throw new Error('User not found for subscription');
+    }
+
+    await updateUserSubscription(user.id, subscription);
+  } catch (error) {
+    console.error('Error syncing subscription status:', error);
+    throw error;
+  }
+}
+
+/**
+ * Handle subscription deletion (downgrade to free)
+ */
+export async function handleSubscriptionDeleted(subscriptionId: string): Promise<void> {
+  try {
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (!user) {
+      return;
+    }
+
+    // Downgrade to free tier
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        stripeSubscriptionId: null,
+        subscriptionStatus: 'canceled',
+        planType: 'free',
+        unitLimit: 3,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        cancelAtPeriodEnd: false,
+      }
+    });
+
+    // Log to history
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: user.id,
+        eventType: 'canceled',
+        fromPlan: user.planType,
+        toPlan: 'free',
+        stripeEventId: subscriptionId,
+      }
+    });
+  } catch (error) {
+    console.error('Error handling subscription deletion:', error);
+    throw error;
+  }
+}
