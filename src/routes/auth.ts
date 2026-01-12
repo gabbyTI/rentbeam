@@ -48,12 +48,14 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
     }
   }
 
-  // Create user in database
+  // Create user in database with default free plan
   const user = await prisma.user.create({
     data: {
       cognitoId,
       email: normalizedEmail,
       name,
+      planType: 'free',
+      unitLimit: 3,
       landlordAccount: {
         create: {}
       }
