@@ -306,6 +306,14 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
       taxId: user.taxId,
       cognitoId: user.cognitoId,
     },
+    subscription: {
+      planType: user.planType,
+      unitLimit: user.unitLimit,
+      subscriptionStatus: user.subscriptionStatus,
+      currentPeriodStart: user.currentPeriodStart,
+      currentPeriodEnd: user.currentPeriodEnd,
+      cancelAtPeriodEnd: user.cancelAtPeriodEnd,
+    },
     memberships: {
       landlord: user.landlordAccount ? {
         id: user.landlordAccount.id,
