@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
+import { checkUnitLimit } from '../middleware/subscriptionGuard.js';
 import prisma from '../lib/prisma.js';
 import { ForbiddenError, ValidationError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
@@ -51,7 +52,7 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 }));
 
 // POST /api/units
-router.post('/', catchAsync(async (req: AuthRequest, res) => {
+router.post('/', checkUnitLimit, catchAsync(async (req: AuthRequest, res) => {
   const { propertyId, name, rentAmount, dueDay, gracePeriodDays } = req.body;
 
   if (!propertyId || !name || !rentAmount || !dueDay) {

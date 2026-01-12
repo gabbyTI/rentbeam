@@ -3,6 +3,11 @@ import { stripeService } from '../services/stripe.js';
 import { emailService } from '../services/email.js';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
+import { 
+  syncSubscriptionStatus, 
+  updateUserSubscription,
+  handleSubscriptionDeleted 
+} from '../services/subscriptionService.js';
 import Stripe from 'stripe';
 
 const router = Router();
@@ -54,6 +59,18 @@ router.post('/stripe', async (req: Request, res: Response) => {
 
       case 'payment_intent.payment_failed':
         await handlePaymentIntentFailed(event.data.object as Stripe.PaymentIntent);
+        break;
+
+      case 'customer.subscription.created':
+        await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
+        break;
+
+      case 'customer.subscription.updated':
+        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
+        break;
+
+      case 'customer.subscription.deleted':
+        await handleSubscriptionDeletedWebhook(event.data.object as Stripe.Subscription);
         break;
 
       default:
@@ -305,6 +322,54 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
     unitName: membership.unit.name,
     isAutopay: autopay === 'true',
   });
+}
+
+/**
+ * Handle customer.subscription.created
+ * Sync subscription details to database
+ */
+async function handleSubscriptionCreated(subscription: Stripe.Subscription) {
+  logger.info({ 
+    subscriptionId: subscription.id, 
+    customerId: subscription.customer,
+    status: subscription.status 
+  }, 'Processing customer.subscription.created webhook');
+
+  await syncSubscriptionStatus(subscription.id);
+
+  logger.info({ subscriptionId: subscription.id }, 'Subscription created and synced to database');
+}
+
+/**
+ * Handle customer.subscription.updated
+ * Sync subscription changes to database (status, plan, period, cancellation)
+ */
+async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
+  logger.info({ 
+    subscriptionId: subscription.id, 
+    customerId: subscription.customer,
+    status: subscription.status,
+    cancelAtPeriodEnd: subscription.cancel_at_period_end 
+  }, 'Processing customer.subscription.updated webhook');
+
+  await syncSubscriptionStatus(subscription.id);
+
+  logger.info({ subscriptionId: subscription.id }, 'Subscription updated and synced to database');
+}
+
+/**
+ * Handle customer.subscription.deleted
+ * Update user to free plan and remove subscription details
+ */
+async function handleSubscriptionDeletedWebhook(subscription: Stripe.Subscription) {
+  logger.info({ 
+    subscriptionId: subscription.id, 
+    customerId: subscription.customer 
+  }, 'Processing customer.subscription.deleted webhook');
+
+  await handleSubscriptionDeleted(subscription.id);
+
+  logger.info({ subscriptionId: subscription.id }, 'Subscription deleted and user downgraded to free plan');
 }
 
 export default router;
