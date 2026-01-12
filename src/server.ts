@@ -14,6 +14,7 @@ import inviteRoutes from './routes/invites.js';
 import stripeRoutes from './routes/stripe.js';
 import webhookRoutes from './routes/webhooks.js';
 import cronRoutes from './routes/cron.js';
+import subscriptionRoutes from './routes/subscriptions.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import prisma from './lib/prisma.js';
 import logger from './lib/logger.js';
@@ -74,6 +75,7 @@ app.use('/api/tenants', tenantRoutes);
 app.use('/api/landlord', landlordRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/invites', inviteRoutes);
+app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/stripe/connect', stripeRoutes);
 app.use('/api/stripe', stripeRoutes); // Add non-connect Stripe routes
 app.use('/api/cron', cronRoutes); // Cron endpoints
