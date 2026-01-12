@@ -3,6 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { STRIPE_CONFIG, STRIPE_PRICE_IDS, PlanType } from '../config/stripe.js';
 import { getPlan } from '../config/plans.js';
 import { getUnitCount } from '../utils/subscriptionHelpers.js';
+import logger from '../lib/logger.js';
 
 const stripe = new Stripe(STRIPE_CONFIG.secretKey, {
   apiVersion: '2025-12-15.clover',
@@ -46,7 +47,7 @@ export async function createCustomer(userId: string, email: string): Promise<str
 
     return customer.id;
   } catch (error) {
-    console.error('Error creating Stripe customer:', error);
+    logger.error({ error }, 'Error creating Stripe customer');
     throw error;
   }
 }
@@ -113,7 +114,7 @@ export async function createSubscription(userId: string, priceId: string): Promi
 
     return subscription;
   } catch (error) {
-    console.error('Error creating subscription:', error);
+    logger.error({ error }, 'Error creating subscription');
     throw error;
   }
 }
@@ -177,7 +178,7 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
 
     return updatedSubscription;
   } catch (error) {
-    console.error('Error upgrading subscription:', error);
+    logger.error({ error }, 'Error upgrading subscription');
     throw error;
   }
 }
@@ -235,7 +236,7 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
 
     return updatedSubscription;
   } catch (error) {
-    console.error('Error downgrading subscription:', error);
+    logger.error({ error }, 'Error downgrading subscription');
     throw error;
   }
 }
@@ -282,7 +283,7 @@ export async function cancelSubscription(subscriptionId: string, immediately: bo
 
     return subscription;
   } catch (error) {
-    console.error('Error canceling subscription:', error);
+    logger.error({ error }, 'Error canceling subscription');
     throw error;
   }
 }
@@ -323,7 +324,7 @@ export async function reactivateSubscription(subscriptionId: string): Promise<St
 
     return subscription;
   } catch (error) {
-    console.error('Error reactivating subscription:', error);
+    logger.error({ error }, 'Error reactivating subscription');
     throw error;
   }
 }
@@ -340,7 +341,7 @@ export async function getCustomerPortalUrl(customerId: string, returnUrl: string
 
     return session.url;
   } catch (error) {
-    console.error('Error creating portal session:', error);
+    logger.error({ error }, 'Error creating portal session');
     throw error;
   }
 }
@@ -377,7 +378,7 @@ export async function updateUserSubscription(userId: string, subscription: Strip
       }
     });
   } catch (error) {
-    console.error('Error updating user subscription:', error);
+    logger.error({ error }, 'Error updating user subscription');
     throw error;
   }
 }
@@ -399,7 +400,7 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
 
     await updateUserSubscription(user.id, subscription);
   } catch (error) {
-    console.error('Error syncing subscription status:', error);
+    logger.error({ error }, 'Error syncing subscription status');
     throw error;
   }
 }
