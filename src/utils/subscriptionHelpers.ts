@@ -1,8 +1,7 @@
-import { PrismaClient, User } from '@prisma/client';
+import { User } from '@prisma/client';
+import prisma from '../lib/prisma.js';
 import { getPlan, getRecommendedPlan } from '../config/plans.js';
 import { PlanType } from '../config/stripe.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Check if a user's subscription is currently active

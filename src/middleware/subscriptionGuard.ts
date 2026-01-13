@@ -1,12 +1,10 @@
 import { Response, NextFunction } from 'express';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
 import { PlanType } from '../config/stripe.js';
 import { canAddUnit, isSubscriptionActive, getUnitCount } from '../utils/subscriptionHelpers.js';
 import { getPlan } from '../config/plans.js';
 import { AuthRequest } from './auth.js';
 import logger from '../lib/logger.js';
-
-const prisma = new PrismaClient();
 
 /**
  * Middleware to check if user can add a new unit (property/tenant)

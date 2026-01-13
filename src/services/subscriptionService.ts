@@ -1,5 +1,5 @@
 import Stripe from 'stripe';
-import { PrismaClient } from '@prisma/client';
+import prisma from '../lib/prisma.js';
 import { STRIPE_CONFIG, STRIPE_PRICE_IDS, PlanType } from '../config/stripe.js';
 import { getPlan } from '../config/plans.js';
 import { getUnitCount } from '../utils/subscriptionHelpers.js';
@@ -8,8 +8,6 @@ import logger from '../lib/logger.js';
 const stripe = new Stripe(STRIPE_CONFIG.secretKey, {
   apiVersion: '2025-12-15.clover',
 });
-
-const prisma = new PrismaClient();
 
 /**
  * Create a Stripe customer for a user
