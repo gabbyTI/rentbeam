@@ -73,6 +73,14 @@ router.post('/stripe', async (req: Request, res: Response) => {
         await handleSubscriptionDeletedWebhook(event.data.object as Stripe.Subscription);
         break;
 
+      case 'invoice.payment_succeeded':
+        await handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice);
+        break;
+
+      case 'invoice.payment_failed':
+        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+        break;
+
       default:
         logger.info({ type: event.type }, 'Unhandled webhook event type');
     }
@@ -370,6 +378,63 @@ async function handleSubscriptionDeletedWebhook(subscription: Stripe.Subscriptio
   await handleSubscriptionDeleted(subscription.id);
 
   logger.info({ subscriptionId: subscription.id }, 'Subscription deleted and user downgraded to free plan');
+}
+
+/**
+ * Handle invoice.payment_succeeded
+ * Confirms successful subscription payment (first payment or renewal)
+ */
+async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
+  logger.info({ 
+    invoiceId: invoice.id,
+    subscriptionId: (invoice as any).subscription,
+    amount: invoice.amount_paid,
+    status: invoice.status 
+  }, 'Processing invoice.payment_succeeded webhook');
+
+  // If this invoice is for a subscription, sync the subscription status
+  const subscriptionId = (invoice as any).subscription;
+  if (subscriptionId && typeof subscriptionId === 'string') {
+    await syncSubscriptionStatus(subscriptionId);
+    logger.info({ subscriptionId }, 'Subscription synced after successful payment');
+  }
+}
+
+/**
+ * Handle invoice.payment_failed
+ * Handle failed subscription payments (first payment or renewal)
+ */
+async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
+  logger.error({ 
+    invoiceId: invoice.id,
+    subscriptionId: (invoice as any).subscription,
+    amount: invoice.amount_due,
+    attemptCount: invoice.attempt_count 
+  }, 'Processing invoice.payment_failed webhook');
+
+  // If this invoice is for a subscription, sync the subscription status
+  // This will update the status to past_due or unpaid
+  const subscriptionId = (invoice as any).subscription;
+  if (subscriptionId && typeof subscriptionId === 'string') {
+    await syncSubscriptionStatus(subscriptionId);
+    
+    // Get user for notification
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (user) {
+      logger.error({ 
+        userId: user.id,
+        userEmail: user.email,
+        subscriptionId,
+        attemptCount: invoice.attempt_count
+      }, 'Subscription payment failed');
+
+      // TODO: Send email notification to user about payment failure
+      // await emailService.sendPaymentFailedNotification(user.email, ...);
+    }
+  }
 }
 
 export default router;

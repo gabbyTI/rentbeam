@@ -93,11 +93,18 @@ export async function createSubscription(userId: string, priceId: string): Promi
       },
       payment_behavior: 'default_incomplete',
       payment_settings: { save_default_payment_method: 'on_subscription' },
-      expand: ['latest_invoice.payment_intent'],
+      expand: ['latest_invoice'],
     });
 
-    // Update user in database
-    await updateUserSubscription(userId, subscription);
+    // Save subscription ID to user so webhooks can find them
+    // Do NOT update planType or unitLimit yet - let webhook handle it after payment
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        stripeSubscriptionId: subscription.id,
+        subscriptionStatus: subscription.status,
+      }
+    });
 
     // Log to subscription history
     await prisma.subscriptionHistory.create({
@@ -208,27 +215,26 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
       throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.unitLimit}. Please remove ${unitCount - newPlan.unitLimit} unit(s) before downgrading.`);
     }
 
-    // Schedule downgrade at period end
+    // Schedule downgrade at period end by storing in subscription metadata
     const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
     
     const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
-      items: [{
-        id: subscription.items.data[0].id,
-        price: newPriceId,
-      }],
-      proration_behavior: 'none',
-      billing_cycle_anchor: 'unchanged',
+      metadata: {
+        ...subscription.metadata,
+        scheduledDowngrade: newPlanType,
+        scheduledPriceId: newPriceId,
+      }
     });
 
     // Log to history
     await prisma.subscriptionHistory.create({
       data: {
         userId: userId,
-        eventType: 'downgraded',
+        eventType: 'downgrade_scheduled',
         fromPlan: user.planType,
         toPlan: newPlanType,
         stripeEventId: updatedSubscription.id,
-        metadata: { scheduledFor: 'end_of_period' }
+        metadata: { scheduledFor: 'end_of_period', effectiveDate: new Date((subscription as any).current_period_end * 1000).toISOString() }
       }
     });
 
@@ -363,18 +369,35 @@ export async function updateUserSubscription(userId: string, subscription: Strip
 
     const plan = getPlan(planType);
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        stripeSubscriptionId: subscription.id,
-        subscriptionStatus: subscription.status,
-        planType: planType,
-        unitLimit: plan.unitLimit,
-        currentPeriodStart: new Date(subscription.items.data[0].current_period_start * 1000),
-        currentPeriodEnd: new Date(subscription.items.data[0].current_period_end * 1000),
-        cancelAtPeriodEnd: subscription.cancel_at_period_end,
-      }
-    });
+    // Only grant benefits if subscription is active/trialing/past_due
+    // Do NOT grant benefits for incomplete (unpaid) subscriptions
+    const shouldGrantBenefits = ['active', 'trialing', 'past_due'].includes(subscription.status);
+
+    if (shouldGrantBenefits) {
+      // Full update with benefits
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          stripeSubscriptionId: subscription.id,
+          subscriptionStatus: subscription.status,
+          planType: planType,
+          unitLimit: plan.unitLimit,
+          currentPeriodStart: new Date(subscription.items.data[0].current_period_start * 1000),
+          currentPeriodEnd: new Date(subscription.items.data[0].current_period_end * 1000),
+          cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        }
+      });
+    } else {
+      // Only update subscription ID and status, keep user on free plan
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          stripeSubscriptionId: subscription.id,
+          subscriptionStatus: subscription.status,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end,
+        }
+      });
+    }
   } catch (error) {
     logger.error({ error }, 'Error updating user subscription');
     throw error;
@@ -394,6 +417,48 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
 
     if (!user) {
       throw new Error('User not found for subscription');
+    }
+
+    // Check if there's a scheduled downgrade to apply
+    if (subscription.metadata?.scheduledDowngrade && subscription.metadata?.scheduledPriceId) {
+      const currentPeriodStart = new Date((subscription as any).current_period_start * 1000);
+      const lastKnownPeriodStart = user.currentPeriodStart;
+
+      // If period just renewed (new period start), apply the scheduled downgrade
+      if (!lastKnownPeriodStart || currentPeriodStart > lastKnownPeriodStart) {
+        logger.info({ subscriptionId, scheduledPlan: subscription.metadata.scheduledDowngrade }, 'Applying scheduled downgrade at period renewal');
+        
+        // Apply the downgrade
+        await stripe.subscriptions.update(subscriptionId, {
+          items: [{
+            id: subscription.items.data[0].id,
+            price: subscription.metadata.scheduledPriceId,
+          }],
+          metadata: {
+            ...subscription.metadata,
+            planType: subscription.metadata.scheduledDowngrade,
+            scheduledDowngrade: null,
+            scheduledPriceId: null,
+          },
+          proration_behavior: 'none',
+        });
+
+        // Retrieve updated subscription
+        const updatedSub = await stripe.subscriptions.retrieve(subscriptionId);
+        await updateUserSubscription(user.id, updatedSub);
+
+        // Log completion
+        await prisma.subscriptionHistory.create({
+          data: {
+            userId: user.id,
+            eventType: 'downgraded',
+            fromPlan: user.planType,
+            toPlan: subscription.metadata.scheduledDowngrade as PlanType,
+            stripeEventId: subscriptionId,
+          }
+        });
+        return;
+      }
     }
 
     await updateUserSubscription(user.id, subscription);

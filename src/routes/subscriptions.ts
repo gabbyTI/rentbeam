@@ -52,12 +52,14 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
   // Check if user already has a subscription
   const currentDetails = await getSubscriptionDetails(userId);
-  if (currentDetails && currentDetails.stripeSubscriptionId) {
+  
+  // Allow creating subscription if current one is incomplete (not paid yet)
+  if (currentDetails && currentDetails.stripeSubscriptionId && currentDetails.subscriptionStatus !== 'incomplete') {
     logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but already has one');
     throw new ValidationError('You already have an active subscription. Use upgrade or downgrade instead.');
   }
 
-  // Verify user is on free plan
+  // Verify user is on free plan (or incomplete subscription that never got paid)
   if (currentDetails && currentDetails.planType !== 'free') {
     logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but is not on free plan');
     throw new ValidationError(`You are already on the ${currentDetails.planType} plan. Use upgrade or downgrade to change plans.`);
@@ -77,7 +79,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   res.status(201).json(apiResponse({
     id: subscription.id,
     status: subscription.status,
-    clientSecret: (subscription.latest_invoice as any)?.payment_intent?.client_secret,
+    hostedInvoiceUrl: (subscription.latest_invoice as any)?.hosted_invoice_url,
     planType
   }, 'Subscription created successfully'));
 }));
