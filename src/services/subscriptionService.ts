@@ -154,6 +154,26 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
     // Get current subscription
     const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
 
+    // Check if there's a scheduled downgrade and log its cancellation
+    if (subscription.metadata?.scheduledDowngrade) {
+      logger.info({ 
+        userId,
+        scheduledPlan: subscription.metadata.scheduledDowngrade,
+        newPlan: newPlanType
+      }, 'Clearing scheduled downgrade due to upgrade');
+      
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: userId,
+          eventType: 'downgrade_cancelled',
+          fromPlan: user.planType,
+          toPlan: subscription.metadata.scheduledDowngrade as PlanType,
+          stripeEventId: subscription.id,
+          metadata: { reason: 'user_upgraded' }
+        }
+      });
+    }
+
     // Update subscription (prorate by default)
     const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
       items: [{
@@ -163,7 +183,9 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
       proration_behavior: 'create_prorations',
       metadata: {
         ...subscription.metadata,
-        planType: newPlanType
+        planType: newPlanType,
+        scheduledDowngrade: null,
+        scheduledPriceId: null,
       }
     });
 
@@ -227,6 +249,10 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
     });
 
     // Log to history
+    const effectiveDate = subscription.items.data[0].current_period_end 
+      ? new Date(subscription.items.data[0].current_period_end * 1000).toISOString()
+      : 'unknown';
+      
     await prisma.subscriptionHistory.create({
       data: {
         userId: userId,
@@ -234,7 +260,7 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
         fromPlan: user.planType,
         toPlan: newPlanType,
         stripeEventId: updatedSubscription.id,
-        metadata: { scheduledFor: 'end_of_period', effectiveDate: new Date((subscription as any).current_period_end * 1000).toISOString() }
+        metadata: { scheduledFor: 'end_of_period', effectiveDate }
       }
     });
 
@@ -250,8 +276,41 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
  */
 export async function cancelSubscription(subscriptionId: string, immediately: boolean = false): Promise<Stripe.Subscription> {
   try {
+    // Retrieve subscription to check for scheduled downgrade
+    const existingSub = await stripe.subscriptions.retrieve(subscriptionId);
+    
+    // Log if cancelling a scheduled downgrade
+    if (existingSub.metadata?.scheduledDowngrade) {
+      const user = await prisma.user.findFirst({
+        where: { stripeSubscriptionId: subscriptionId }
+      });
+      
+      if (user) {
+        logger.info({ 
+          subscriptionId,
+          scheduledPlan: existingSub.metadata.scheduledDowngrade
+        }, 'Clearing scheduled downgrade due to cancellation');
+        
+        await prisma.subscriptionHistory.create({
+          data: {
+            userId: user.id,
+            eventType: 'downgrade_cancelled',
+            fromPlan: user.planType,
+            toPlan: existingSub.metadata.scheduledDowngrade as PlanType,
+            stripeEventId: subscriptionId,
+            metadata: { reason: 'user_cancelled_subscription' }
+          }
+        });
+      }
+    }
+    
     const subscription = await stripe.subscriptions.update(subscriptionId, {
       cancel_at_period_end: !immediately,
+      metadata: {
+        ...existingSub.metadata,
+        scheduledDowngrade: null,
+        scheduledPriceId: null,
+      }
     });
 
     if (immediately) {
@@ -426,7 +485,54 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
 
       // If period just renewed (new period start), apply the scheduled downgrade
       if (!lastKnownPeriodStart || currentPeriodStart > lastKnownPeriodStart) {
-        logger.info({ subscriptionId, scheduledPlan: subscription.metadata.scheduledDowngrade }, 'Applying scheduled downgrade at period renewal');
+        const scheduledPlan = subscription.metadata.scheduledDowngrade as PlanType;
+        
+        logger.info({ subscriptionId, scheduledPlan }, 'Applying scheduled downgrade at period renewal');
+        
+        // Re-validate unit count before applying downgrade
+        const currentUnitCount = await getUnitCount(user.id);
+        const targetPlan = getPlan(scheduledPlan);
+        
+        if (currentUnitCount > targetPlan.unitLimit) {
+          // User has too many units - block the downgrade
+          logger.warn({ 
+            subscriptionId, 
+            scheduledPlan, 
+            currentUnitCount, 
+            targetLimit: targetPlan.unitLimit,
+            userId: user.id
+          }, 'Scheduled downgrade blocked - user has too many units');
+          
+          // Clear the scheduled downgrade
+          await stripe.subscriptions.update(subscriptionId, {
+            metadata: {
+              ...subscription.metadata,
+              scheduledDowngrade: null,
+              scheduledPriceId: null,
+            },
+          });
+          
+          // Log blocked event
+          await prisma.subscriptionHistory.create({
+            data: {
+              userId: user.id,
+              eventType: 'downgrade_blocked',
+              fromPlan: user.planType,
+              toPlan: scheduledPlan,
+              stripeEventId: subscriptionId,
+              metadata: { 
+                reason: 'too_many_units',
+                currentUnits: currentUnitCount,
+                targetLimit: targetPlan.unitLimit
+              }
+            }
+          });
+          
+          // TODO: Send email notification to user
+          logger.info({ userId: user.id }, 'TODO: Send email about blocked downgrade');
+          
+          return;
+        }
         
         // Apply the downgrade
         await stripe.subscriptions.update(subscriptionId, {
@@ -453,7 +559,7 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
             userId: user.id,
             eventType: 'downgraded',
             fromPlan: user.planType,
-            toPlan: subscription.metadata.scheduledDowngrade as PlanType,
+            toPlan: scheduledPlan,
             stripeEventId: subscriptionId,
           }
         });

@@ -15,6 +15,7 @@ import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { ValidationError, NotFoundError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
+import prisma from '../lib/prisma.js';
 
 const router = Router();
 
@@ -53,7 +54,45 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Check if user already has a subscription
   const currentDetails = await getSubscriptionDetails(userId);
   
-  // Allow creating subscription if current one is incomplete (not paid yet)
+  // If user has an incomplete subscription, cancel it before creating new one
+  if (currentDetails && currentDetails.stripeSubscriptionId && currentDetails.subscriptionStatus === 'incomplete') {
+    logger.info({ 
+      userId, 
+      oldSubscriptionId: currentDetails.stripeSubscriptionId,
+      newPlan: planType 
+    }, 'Canceling old incomplete subscription before creating new one');
+    
+    try {
+      // Cancel the old incomplete subscription
+      await cancelSubscription(currentDetails.stripeSubscriptionId, true);
+      
+      // Clear from database
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          stripeSubscriptionId: null,
+          subscriptionStatus: null,
+        }
+      });
+      
+      // Log cleanup
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: userId,
+          eventType: 'incomplete_cleaned',
+          fromPlan: currentDetails.planType,
+          toPlan: 'free',
+          stripeEventId: currentDetails.stripeSubscriptionId,
+          metadata: { reason: 'creating_new_subscription' }
+        }
+      });
+    } catch (error) {
+      logger.error({ error, userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Failed to cancel old incomplete subscription');
+      // Continue anyway - the new subscription creation will fail if there's still a conflict
+    }
+  }
+  
+  // Block if user has active/paid subscription
   if (currentDetails && currentDetails.stripeSubscriptionId && currentDetails.subscriptionStatus !== 'incomplete') {
     logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but already has one');
     throw new ValidationError('You already have an active subscription. Use upgrade or downgrade instead.');
