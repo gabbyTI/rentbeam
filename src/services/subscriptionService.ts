@@ -113,7 +113,7 @@ export async function createSubscription(userId: string, priceId: string): Promi
         eventType: 'created',
         fromPlan: user.planType,
         toPlan: planType,
-        stripeEventId: subscription.id,
+        stripeObjectId: subscription.id,
       }
     });
 
@@ -168,7 +168,7 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
           eventType: 'downgrade_cancelled',
           fromPlan: user.planType,
           toPlan: subscription.metadata.scheduledDowngrade as PlanType,
-          stripeEventId: subscription.id,
+          stripeObjectId: subscription.id,
           metadata: { reason: 'user_upgraded' }
         }
       });
@@ -199,7 +199,7 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
         eventType: 'upgraded',
         fromPlan: user.planType,
         toPlan: newPlanType,
-        stripeEventId: updatedSubscription.id,
+        stripeObjectId: updatedSubscription.id,
       }
     });
 
@@ -259,7 +259,7 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
         eventType: 'downgrade_scheduled',
         fromPlan: user.planType,
         toPlan: newPlanType,
-        stripeEventId: updatedSubscription.id,
+        stripeObjectId: updatedSubscription.id,
         metadata: { scheduledFor: 'end_of_period', effectiveDate }
       }
     });
@@ -297,7 +297,7 @@ export async function cancelSubscription(subscriptionId: string, immediately: bo
             eventType: 'downgrade_cancelled',
             fromPlan: user.planType,
             toPlan: existingSub.metadata.scheduledDowngrade as PlanType,
-            stripeEventId: subscriptionId,
+            stripeObjectId: subscriptionId,
             metadata: { reason: 'user_cancelled_subscription' }
           }
         });
@@ -338,7 +338,7 @@ export async function cancelSubscription(subscriptionId: string, immediately: bo
           eventType: 'canceled',
           fromPlan: user.planType,
           toPlan: immediately ? 'free' : user.planType,
-          stripeEventId: subscriptionId,
+          stripeObjectId: subscriptionId,
           metadata: { immediately }
         }
       });
@@ -380,7 +380,7 @@ export async function reactivateSubscription(subscriptionId: string): Promise<St
           eventType: 'reactivated',
           fromPlan: user.planType,
           toPlan: user.planType,
-          stripeEventId: subscriptionId,
+          stripeObjectId: subscriptionId,
         }
       });
     }
@@ -470,9 +470,30 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
     
-    const user = await prisma.user.findFirst({
+    // Try to find user by subscription ID first
+    let user = await prisma.user.findFirst({
       where: { stripeSubscriptionId: subscriptionId }
     });
+
+    // If not found (race condition - webhook arrived before we saved subscription ID),
+    // try finding by customer ID
+    if (!user && typeof subscription.customer === 'string') {
+      user = await prisma.user.findFirst({
+        where: { stripeCustomerId: subscription.customer }
+      });
+      
+      // If we found the user by customer ID, this is a race condition scenario
+      // The subscription creation is still in progress, so just skip this webhook
+      // The app will handle the subscription setup after creation completes
+      if (user) {
+        logger.warn({ 
+          subscriptionId, 
+          customerId: subscription.customer,
+          userId: user.id 
+        }, 'Race condition detected: webhook arrived before subscription ID saved. Skipping sync.');
+        return;
+      }
+    }
 
     if (!user) {
       throw new Error('User not found for subscription');
@@ -519,7 +540,7 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
               eventType: 'downgrade_blocked',
               fromPlan: user.planType,
               toPlan: scheduledPlan,
-              stripeEventId: subscriptionId,
+              stripeObjectId: subscriptionId,
               metadata: { 
                 reason: 'too_many_units',
                 currentUnits: currentUnitCount,
@@ -560,7 +581,7 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
             eventType: 'downgraded',
             fromPlan: user.planType,
             toPlan: scheduledPlan,
-            stripeEventId: subscriptionId,
+            stripeObjectId: subscriptionId,
           }
         });
         return;
@@ -608,7 +629,7 @@ export async function handleSubscriptionDeleted(subscriptionId: string): Promise
         eventType: 'canceled',
         fromPlan: user.planType,
         toPlan: 'free',
-        stripeEventId: subscriptionId,
+        stripeObjectId: subscriptionId,
       }
     });
   } catch (error) {

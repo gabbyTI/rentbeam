@@ -199,17 +199,19 @@ enum OtpType {
 }
 
 model SubscriptionHistory {
-  id            String   @id @default(uuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  eventType     String // created, upgraded, downgraded, canceled, payment_failed, reactivated
-  fromPlan      String? // previous plan (for upgrades/downgrades)
-  toPlan        String? // new plan
-  stripeEventId String? // Stripe event ID for idempotency
-  metadata      Json? // Additional event data
-  createdAt     DateTime @default(now())
+  id             String   @id @default(uuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  eventType      String // created, upgraded, downgraded, canceled, payment_failed, reactivated
+  fromPlan       String? // previous plan (for upgrades/downgrades)
+  toPlan         String? // new plan
+  stripeObjectId String? // Stripe object ID (subscription ID, payment ID, etc.)
+  stripeEventId  String? // Stripe webhook event ID for idempotency (evt_xxx)
+  metadata       Json? // Additional event data
+  createdAt      DateTime @default(now())
 
   @@index([userId])
   @@index([createdAt])
+  @@index([stripeEventId])
   @@map("subscription_history")
 }

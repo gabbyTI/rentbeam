@@ -48,6 +48,20 @@ router.post('/stripe', async (req: Request, res: Response) => {
   logger.info({ type: event.type, id: event.id }, 'Stripe webhook received');
 
   try {
+    // Idempotency check: Have we already processed this webhook event?
+    const existingEvent = await prisma.subscriptionHistory.findFirst({
+      where: { stripeEventId: event.id }
+    });
+
+    if (existingEvent) {
+      logger.info({ 
+        eventId: event.id, 
+        eventType: event.type,
+        existingRecordId: existingEvent.id 
+      }, 'Webhook event already processed (idempotency check), skipping');
+      return res.status(200).json({ received: true, skipped: true });
+    }
+
     switch (event.type) {
       case 'setup_intent.succeeded':
         await handleSetupIntentSucceeded(event.data.object as Stripe.SetupIntent);
@@ -62,23 +76,23 @@ router.post('/stripe', async (req: Request, res: Response) => {
         break;
 
       case 'customer.subscription.created':
-        await handleSubscriptionCreated(event.data.object as Stripe.Subscription);
+        await handleSubscriptionCreated(event.data.object as Stripe.Subscription, event.id);
         break;
 
       case 'customer.subscription.updated':
-        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription);
+        await handleSubscriptionUpdated(event.data.object as Stripe.Subscription, event.id);
         break;
 
       case 'customer.subscription.deleted':
-        await handleSubscriptionDeletedWebhook(event.data.object as Stripe.Subscription);
+        await handleSubscriptionDeletedWebhook(event.data.object as Stripe.Subscription, event.id);
         break;
 
       case 'invoice.payment_succeeded':
-        await handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice);
+        await handleInvoicePaymentSucceeded(event.data.object as Stripe.Invoice, event.id);
         break;
 
       case 'invoice.payment_failed':
-        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice);
+        await handleInvoicePaymentFailed(event.data.object as Stripe.Invoice, event.id);
         break;
 
       default:
@@ -336,67 +350,178 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
  * Handle customer.subscription.created
  * Sync subscription details to database
  */
-async function handleSubscriptionCreated(subscription: Stripe.Subscription) {
+async function handleSubscriptionCreated(subscription: Stripe.Subscription, eventId: string) {
   logger.info({ 
     subscriptionId: subscription.id, 
     customerId: subscription.customer,
-    status: subscription.status 
+    status: subscription.status,
+    eventId
   }, 'Processing customer.subscription.created webhook');
 
   await syncSubscriptionStatus(subscription.id);
 
-  logger.info({ subscriptionId: subscription.id }, 'Subscription created and synced to database');
+  // Log webhook event to history
+  // Try subscription ID first, fallback to customer ID (race condition)
+  let user = await prisma.user.findFirst({
+    where: { stripeSubscriptionId: subscription.id }
+  });
+
+  if (!user && typeof subscription.customer === 'string') {
+    user = await prisma.user.findFirst({
+      where: { stripeCustomerId: subscription.customer }
+    });
+  }
+
+  if (user) {
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: user.id,
+        eventType: 'webhook_received',
+        fromPlan: user.planType,
+        toPlan: user.planType,
+        stripeObjectId: subscription.id,
+        stripeEventId: eventId,
+        metadata: { webhookType: 'customer.subscription.created', status: subscription.status }
+      }
+    });
+  }
+
+  logger.info({ subscriptionId: subscription.id, eventId }, 'Subscription created and synced to database');
 }
 
 /**
  * Handle customer.subscription.updated
  * Sync subscription changes to database (status, plan, period, cancellation)
  */
-async function handleSubscriptionUpdated(subscription: Stripe.Subscription) {
+async function handleSubscriptionUpdated(subscription: Stripe.Subscription, eventId: string) {
   logger.info({ 
     subscriptionId: subscription.id, 
     customerId: subscription.customer,
     status: subscription.status,
-    cancelAtPeriodEnd: subscription.cancel_at_period_end 
+    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    eventId
   }, 'Processing customer.subscription.updated webhook');
 
   await syncSubscriptionStatus(subscription.id);
 
-  logger.info({ subscriptionId: subscription.id }, 'Subscription updated and synced to database');
+  // Log webhook event to history
+  // Try subscription ID first, fallback to customer ID (race condition)
+  let user = await prisma.user.findFirst({
+    where: { stripeSubscriptionId: subscription.id }
+  });
+
+  if (!user && typeof subscription.customer === 'string') {
+    user = await prisma.user.findFirst({
+      where: { stripeCustomerId: subscription.customer }
+    });
+  }
+
+  if (user) {
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: user.id,
+        eventType: 'webhook_received',
+        fromPlan: user.planType,
+        toPlan: user.planType,
+        stripeObjectId: subscription.id,
+        stripeEventId: eventId,
+        metadata: { 
+          webhookType: 'customer.subscription.updated', 
+          status: subscription.status,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end
+        }
+      }
+    });
+  }
+
+  logger.info({ subscriptionId: subscription.id, eventId }, 'Subscription updated and synced to database');
 }
 
 /**
  * Handle customer.subscription.deleted
  * Update user to free plan and remove subscription details
  */
-async function handleSubscriptionDeletedWebhook(subscription: Stripe.Subscription) {
+async function handleSubscriptionDeletedWebhook(subscription: Stripe.Subscription, eventId: string) {
   logger.info({ 
     subscriptionId: subscription.id, 
-    customerId: subscription.customer 
+    customerId: subscription.customer,
+    eventId
   }, 'Processing customer.subscription.deleted webhook');
+
+  // Get user before deletion for logging
+  // Try subscription ID first, fallback to customer ID (race condition)
+  let user = await prisma.user.findFirst({
+    where: { stripeSubscriptionId: subscription.id }
+  });
+
+  if (!user && typeof subscription.customer === 'string') {
+    user = await prisma.user.findFirst({
+      where: { stripeCustomerId: subscription.customer }
+    });
+  }
 
   await handleSubscriptionDeleted(subscription.id);
 
-  logger.info({ subscriptionId: subscription.id }, 'Subscription deleted and user downgraded to free plan');
+  // Log webhook event to history
+  if (user) {
+    await prisma.subscriptionHistory.create({
+      data: {
+        userId: user.id,
+        eventType: 'webhook_received',
+        fromPlan: user.planType,
+        toPlan: 'free',
+        stripeObjectId: subscription.id,
+        stripeEventId: eventId,
+        metadata: { webhookType: 'customer.subscription.deleted' }
+      }
+    });
+  }
+
+  logger.info({ subscriptionId: subscription.id, eventId }, 'Subscription deleted and user downgraded to free plan');
 }
 
 /**
  * Handle invoice.payment_succeeded
  * Confirms successful subscription payment (first payment or renewal)
  */
-async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
+async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice, eventId: string) {
   logger.info({ 
     invoiceId: invoice.id,
     subscriptionId: (invoice as any).subscription,
     amount: invoice.amount_paid,
-    status: invoice.status 
+    status: invoice.status,
+    eventId
   }, 'Processing invoice.payment_succeeded webhook');
 
   // If this invoice is for a subscription, sync the subscription status
   const subscriptionId = (invoice as any).subscription;
   if (subscriptionId && typeof subscriptionId === 'string') {
     await syncSubscriptionStatus(subscriptionId);
-    logger.info({ subscriptionId }, 'Subscription synced after successful payment');
+    
+    // Log webhook event to history
+    const user = await prisma.user.findFirst({
+      where: { stripeSubscriptionId: subscriptionId }
+    });
+
+    if (user) {
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: user.id,
+          eventType: 'webhook_received',
+          fromPlan: user.planType,
+          toPlan: user.planType,
+          stripeObjectId: invoice.id,
+          stripeEventId: eventId,
+          metadata: { 
+            webhookType: 'invoice.payment_succeeded',
+            subscriptionId,
+            amountPaid: invoice.amount_paid
+          }
+        }
+      });
+    }
+    
+    logger.info({ subscriptionId, eventId }, 'Subscription synced after successful payment');
   }
 }
 
@@ -404,12 +529,13 @@ async function handleInvoicePaymentSucceeded(invoice: Stripe.Invoice) {
  * Handle invoice.payment_failed
  * Handle failed subscription payments (first payment or renewal)
  */
-async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
+async function handleInvoicePaymentFailed(invoice: Stripe.Invoice, eventId: string) {
   logger.error({ 
     invoiceId: invoice.id,
     subscriptionId: (invoice as any).subscription,
     amount: invoice.amount_due,
-    attemptCount: invoice.attempt_count 
+    attemptCount: invoice.attempt_count,
+    eventId
   }, 'Processing invoice.payment_failed webhook');
 
   // If this invoice is for a subscription, sync the subscription status
@@ -428,8 +554,27 @@ async function handleInvoicePaymentFailed(invoice: Stripe.Invoice) {
         userId: user.id,
         userEmail: user.email,
         subscriptionId,
-        attemptCount: invoice.attempt_count
+        attemptCount: invoice.attempt_count,
+        eventId
       }, 'Subscription payment failed');
+
+      // Log webhook event to history
+      await prisma.subscriptionHistory.create({
+        data: {
+          userId: user.id,
+          eventType: 'webhook_received',
+          fromPlan: user.planType,
+          toPlan: user.planType,
+          stripeObjectId: invoice.id,
+          stripeEventId: eventId,
+          metadata: { 
+            webhookType: 'invoice.payment_failed',
+            subscriptionId,
+            amountDue: invoice.amount_due,
+            attemptCount: invoice.attempt_count
+          }
+        }
+      });
 
       // TODO: Send email notification to user about payment failure
       // await emailService.sendPaymentFailedNotification(user.email, ...);

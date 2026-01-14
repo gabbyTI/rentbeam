@@ -82,7 +82,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
           eventType: 'incomplete_cleaned',
           fromPlan: currentDetails.planType,
           toPlan: 'free',
-          stripeEventId: currentDetails.stripeSubscriptionId,
+          stripeObjectId: currentDetails.stripeSubscriptionId,
           metadata: { reason: 'creating_new_subscription' }
         }
       });
@@ -236,7 +236,7 @@ router.post('/downgrade', catchAsync(async (req: AuthRequest, res) => {
  */
 router.post('/cancel', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
-  const { immediately = false } = req.body;
+  const { immediately = false } = req.body || {};
 
   logger.info({ userId, immediately }, 'Canceling subscription');
 
