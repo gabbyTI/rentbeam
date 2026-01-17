@@ -9,14 +9,29 @@ export interface PlanConfig {
   id: PlanType;
   name: string;
   price: number; // Monthly price in dollars
-  unitLimit: number; // Maximum units allowed
   stripePriceId: string | null; // Stripe Price ID (null for free)
   features: string[];
   limits: {
-    units: number;
+    units: number; // Maximum units allowed
     properties: number; // -1 = unlimited
     users: number; // Multi-user access
     supportLevel: 'community' | 'priority' | 'dedicated';
+    features: {
+      autopay: boolean;
+      manualPayments: boolean;
+      emailReminders: boolean;
+      smsReminders: boolean;
+      dataExport: boolean;
+      advancedReporting: boolean;
+      customReminderTemplates: boolean;
+      brandedInvites: boolean;
+      apiAccess: boolean;
+      whiteLabel: boolean;
+    };
+    rateLimit?: {
+      emailsPerMonth: number;
+      smsPerMonth: number;
+    };
   };
 }
 
@@ -25,7 +40,6 @@ export const PLANS: Record<PlanType, PlanConfig> = {
     id: 'free',
     name: 'Free Forever',
     price: 0,
-    unitLimit: 3,
     stripePriceId: null,
     features: [
       'Automated Rent Collection',
@@ -39,6 +53,22 @@ export const PLANS: Record<PlanType, PlanConfig> = {
       properties: -1, // Unlimited properties
       users: 1,
       supportLevel: 'community',
+      features: {
+        autopay: false,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: false,
+        dataExport: false,
+        advancedReporting: false,
+        customReminderTemplates: false,
+        brandedInvites: false,
+        apiAccess: false,
+        whiteLabel: false,
+      },
+      rateLimit: {
+        emailsPerMonth: 1000,
+        smsPerMonth: 0,
+      },
     },
   },
   
@@ -46,10 +76,10 @@ export const PLANS: Record<PlanType, PlanConfig> = {
     id: 'starter',
     name: 'Starter',
     price: 29,
-    unitLimit: 10,
     stripePriceId: STRIPE_PRICE_IDS.starter,
     features: [
       'Everything in Free',
+      'Autopay',
       'SMS Reminders',
       'Priority Support',
       'Payment History Export',
@@ -60,6 +90,22 @@ export const PLANS: Record<PlanType, PlanConfig> = {
       properties: -1,
       users: 1,
       supportLevel: 'priority',
+      features: {
+        autopay: true,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: true,
+        dataExport: true,
+        advancedReporting: true,
+        customReminderTemplates: false,
+        brandedInvites: false,
+        apiAccess: false,
+        whiteLabel: false,
+      },
+      rateLimit: {
+        emailsPerMonth: 5000,
+        smsPerMonth: 500,
+      },
     },
   },
   
@@ -67,7 +113,6 @@ export const PLANS: Record<PlanType, PlanConfig> = {
     id: 'growth',
     name: 'Growth',
     price: 79,
-    unitLimit: 50,
     stripePriceId: STRIPE_PRICE_IDS.growth,
     features: [
       'Everything in Starter',
@@ -81,6 +126,22 @@ export const PLANS: Record<PlanType, PlanConfig> = {
       properties: -1,
       users: 5,
       supportLevel: 'dedicated',
+      features: {
+        autopay: true,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: true,
+        dataExport: true,
+        advancedReporting: true,
+        customReminderTemplates: true,
+        brandedInvites: true,
+        apiAccess: false,
+        whiteLabel: false,
+      },
+      rateLimit: {
+        emailsPerMonth: 20000,
+        smsPerMonth: 2000,
+      },
     },
   },
   
@@ -88,7 +149,6 @@ export const PLANS: Record<PlanType, PlanConfig> = {
     id: 'professional',
     name: 'Professional',
     price: 149,
-    unitLimit: 100,
     stripePriceId: STRIPE_PRICE_IDS.professional,
     features: [
       'Everything in Growth',
@@ -102,6 +162,22 @@ export const PLANS: Record<PlanType, PlanConfig> = {
       properties: -1,
       users: -1, // Unlimited
       supportLevel: 'dedicated',
+      features: {
+        autopay: true,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: true,
+        dataExport: true,
+        advancedReporting: true,
+        customReminderTemplates: true,
+        brandedInvites: true,
+        apiAccess: true,
+        whiteLabel: true,
+      },
+      rateLimit: {
+        emailsPerMonth: -1, // Unlimited
+        smsPerMonth: -1, // Unlimited
+      },
     },
   },
 };
@@ -144,7 +220,7 @@ export function canUpgradeToPlan(currentPlan: PlanType, targetPlan: PlanType, cu
   const target = getPlan(targetPlan);
   
   // Check if target plan can accommodate current units
-  if (currentUnitCount > target.unitLimit) {
+  if (currentUnitCount > target.limits.units) {
     return false;
   }
   
@@ -158,7 +234,7 @@ export function canDowngradeToPlan(currentPlan: PlanType, targetPlan: PlanType, 
   const target = getPlan(targetPlan);
   
   // Check if target plan can accommodate current units
-  if (currentUnitCount > target.unitLimit) {
+  if (currentUnitCount > target.limits.units) {
     return false;
   }
   
@@ -171,4 +247,23 @@ export function canDowngradeToPlan(currentPlan: PlanType, targetPlan: PlanType, 
   }
   
   return true;
+}
+
+/**
+ * Check if a plan has a specific feature enabled
+ */
+export function hasFeature(planType: PlanType, feature: keyof PlanConfig['limits']['features']): boolean {
+  const plan = getPlan(planType);
+  return plan.limits.features[feature];
+}
+
+/**
+ * Get the rate limit for a specific resource
+ */
+export function getRateLimit(planType: PlanType, resource: 'emails' | 'sms'): number {
+  const plan = getPlan(planType);
+  if (!plan.limits.rateLimit) {
+    return -1; // Unlimited
+  }
+  return resource === 'emails' ? plan.limits.rateLimit.emailsPerMonth : plan.limits.rateLimit.smsPerMonth;
 }

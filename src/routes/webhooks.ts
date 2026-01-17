@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { stripeService } from '../services/stripe.js';
 import { emailService } from '../services/email.js';
+import { subscriptionEnforcementService } from '../services/subscriptionEnforcementService.js';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
 import { 
@@ -461,6 +462,26 @@ async function handleSubscriptionDeletedWebhook(subscription: Stripe.Subscriptio
   }
 
   await handleSubscriptionDeleted(subscription.id);
+
+  // Check if user is over limit after reverting to free plan
+  if (user) {
+    try {
+      const enforcementState = await subscriptionEnforcementService.getEnforcementState(user.id);
+      if (enforcementState.isOverLimit) {
+        logger.warn({ 
+          userId: user.id,
+          unitCount: enforcementState.unitCount,
+          limit: enforcementState.unitLimit,
+          overBy: enforcementState.overLimitBy
+        }, 'User reverted to free plan with excess units - entering read-only mode');
+        
+        // TODO: Send email notification to landlord about over-limit state
+        // TODO: Send notifications to tenants about payment processing being disabled
+      }
+    } catch (error) {
+      logger.error({ error, userId: user.id }, 'Error checking enforcement state after subscription deletion');
+    }
+  }
 
   // Log webhook event to history
   if (user) {

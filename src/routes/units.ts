@@ -6,6 +6,7 @@ import { ForbiddenError, ValidationError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
+import logger from '../lib/logger.js';
 
 const router = Router();
 

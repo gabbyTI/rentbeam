@@ -22,7 +22,7 @@ export async function checkUnitLimit(req: AuthRequest, res: Response, next: Next
     // Check if user can add another unit
     const canAdd = await canAddUnit(userId);
 
-    if (!canAdd) {
+    if (!canAdd.allowed) {
       const user = await prisma.user.findUnique({
         where: { id: userId },
         select: { planType: true, unitLimit: true }
@@ -31,20 +31,19 @@ export async function checkUnitLimit(req: AuthRequest, res: Response, next: Next
       const currentCount = await getUnitCount(userId);
       const plan = getPlan(user?.planType as PlanType || 'free');
 
-      logger.warn({ userId, planType: user?.planType, currentCount, limit: plan.unitLimit }, 'Unit limit reached - request blocked');
+      logger.warn({ userId, planType: user?.planType, currentCount, limit: plan.limits.units }, 'Unit limit reached - request blocked');
 
       res.status(403).json({
         error: 'Unit limit reached',
-        message: `You have reached your plan limit of ${plan.unitLimit} units. Please upgrade your plan to add more.`,
+        message: `You have reached your plan limit of ${plan.limits.units} units. Please upgrade your plan to add more.`,
         currentCount,
-        limit: plan.unitLimit,
+        limit: plan.limits.units,
         planType: user?.planType,
         upgradeRequired: true
       });
       return;
     }
 
-    logger.info({ userId }, 'Unit limit check passed');
     next();
   } catch (error) {
     logger.error({ error }, 'Error checking unit limit');

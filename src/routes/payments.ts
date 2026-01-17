@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 import { paymentsTotal, paymentsAmountCents } from '../lib/metrics.js';
+import { subscriptionEnforcementService } from '../services/subscriptionEnforcementService.js';
 import prisma from '../lib/prisma.js';
 import { ValidationError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
@@ -81,6 +82,13 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
   if (!landlord) {
     throw new ForbiddenError('Only landlords can record payments');
+  }
+
+  // Check if landlord can collect payments (not over limit)
+  const canCollect = await subscriptionEnforcementService.canCollectPayment(user.id);
+  if (!canCollect.allowed) {
+    logger.warn({ userId: user.id, landlordId: landlord.id }, 'Payment collection blocked - over limit');
+    throw new ForbiddenError(canCollect.reason || 'Payment collection is currently disabled');
   }
 
   // Validate tenant membership exists and belongs to this landlord

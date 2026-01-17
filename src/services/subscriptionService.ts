@@ -79,8 +79,8 @@ export async function createSubscription(userId: string, priceId: string): Promi
     const unitCount = await getUnitCount(userId);
     const plan = getPlan(planType);
     
-    if (unitCount > plan.unitLimit) {
-      throw new Error(`You have ${unitCount} units but the ${plan.name} plan only allows ${plan.unitLimit} units.`);
+    if (unitCount > plan.limits.units) {
+      throw new Error(`You have ${unitCount} units but the ${plan.name} plan only allows ${plan.limits.units} units.`);
     }
 
     // Create subscription
@@ -147,8 +147,8 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
     const unitCount = await getUnitCount(userId);
     const newPlan = getPlan(newPlanType);
     
-    if (unitCount > newPlan.unitLimit) {
-      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.unitLimit} units.`);
+    if (unitCount > newPlan.limits.units) {
+      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.limits.units} units.`);
     }
 
     // Get current subscription
@@ -233,8 +233,8 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
     const unitCount = await getUnitCount(userId);
     const newPlan = getPlan(newPlanType);
     
-    if (unitCount > newPlan.unitLimit) {
-      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.unitLimit}. Please remove ${unitCount - newPlan.unitLimit} unit(s) before downgrading.`);
+    if (unitCount > newPlan.limits.units) {
+      throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.limits.units}. Please remove ${unitCount - newPlan.limits.units} unit(s) before downgrading.`);
     }
 
     // Schedule downgrade at period end by storing in subscription metadata
@@ -440,7 +440,7 @@ export async function updateUserSubscription(userId: string, subscription: Strip
           stripeSubscriptionId: subscription.id,
           subscriptionStatus: subscription.status,
           planType: planType,
-          unitLimit: plan.unitLimit,
+          unitLimit: plan.limits.units,
           currentPeriodStart: new Date(subscription.items.data[0].current_period_start * 1000),
           currentPeriodEnd: new Date(subscription.items.data[0].current_period_end * 1000),
           cancelAtPeriodEnd: subscription.cancel_at_period_end,
@@ -514,13 +514,13 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
         const currentUnitCount = await getUnitCount(user.id);
         const targetPlan = getPlan(scheduledPlan);
         
-        if (currentUnitCount > targetPlan.unitLimit) {
+        if (currentUnitCount > targetPlan.limits.units) {
           // User has too many units - block the downgrade
           logger.warn({ 
             subscriptionId, 
             scheduledPlan, 
             currentUnitCount, 
-            targetLimit: targetPlan.unitLimit,
+            targetLimit: targetPlan.limits.units,
             userId: user.id
           }, 'Scheduled downgrade blocked - user has too many units');
           
@@ -544,7 +544,7 @@ export async function syncSubscriptionStatus(subscriptionId: string): Promise<vo
               metadata: { 
                 reason: 'too_many_units',
                 currentUnits: currentUnitCount,
-                targetLimit: targetPlan.unitLimit
+                targetLimit: targetPlan.limits.units
               }
             }
           });

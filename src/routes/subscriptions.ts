@@ -3,6 +3,7 @@ import { AuthRequest, authenticate } from '../middleware/auth.js';
 import { STRIPE_PRICE_IDS, PlanType } from '../config/stripe.js';
 import { getPlan } from '../config/plans.js';
 import { getSubscriptionDetails } from '../utils/subscriptionHelpers.js';
+import { subscriptionEnforcementService } from '../services/subscriptionEnforcementService.js';
 import {
   createSubscription,
   upgradeSubscription,
@@ -32,8 +33,18 @@ router.get('/current', catchAsync(async (req: AuthRequest, res) => {
   logger.info({ userId }, 'Fetching current subscription details');
 
   const details = await getSubscriptionDetails(userId);
+  
+  // Add enforcement state
+  const enforcementState = await subscriptionEnforcementService.getEnforcementState(userId);
 
-  res.json(apiResponse(details));
+  res.json(apiResponse({
+    ...details,
+    unitCount: enforcementState.unitCount,
+    unitLimit: enforcementState.unitLimit,
+    isOverLimit: enforcementState.isOverLimit,
+    overLimitBy: enforcementState.overLimitBy,
+    restrictions: enforcementState.restrictions
+  }));
 }));
 
 /**
@@ -54,11 +65,13 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Check if user already has a subscription
   const currentDetails = await getSubscriptionDetails(userId);
   
-  // If user has an incomplete subscription, cancel it before creating new one
-  if (currentDetails && currentDetails.stripeSubscriptionId && currentDetails.subscriptionStatus === 'incomplete') {
+  // If user has an incomplete or incomplete_expired subscription, cancel it before creating new one
+  if (currentDetails && currentDetails.stripeSubscriptionId && 
+      (currentDetails.subscriptionStatus === 'incomplete' || currentDetails.subscriptionStatus === 'incomplete_expired')) {
     logger.info({ 
       userId, 
       oldSubscriptionId: currentDetails.stripeSubscriptionId,
+      oldStatus: currentDetails.subscriptionStatus,
       newPlan: planType 
     }, 'Canceling old incomplete subscription before creating new one');
     
@@ -92,8 +105,10 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     }
   }
   
-  // Block if user has active/paid subscription
-  if (currentDetails && currentDetails.stripeSubscriptionId && currentDetails.subscriptionStatus !== 'incomplete') {
+  // Block if user has active/paid subscription (but allow incomplete/incomplete_expired which will be cleaned up above)
+  if (currentDetails && currentDetails.stripeSubscriptionId && 
+      currentDetails.subscriptionStatus !== 'incomplete' && 
+      currentDetails.subscriptionStatus !== 'incomplete_expired') {
     logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but already has one');
     throw new ValidationError('You already have an active subscription. Use upgrade or downgrade instead.');
   }

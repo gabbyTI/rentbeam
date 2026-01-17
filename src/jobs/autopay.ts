@@ -1,5 +1,6 @@
 import prisma from '../lib/prisma.js';
 import { stripeService } from '../services/stripe.js';
+import { subscriptionEnforcementService } from '../services/subscriptionEnforcementService.js';
 import { cronExecutionsTotal, cronLastRunTimestamp, paymentsTotal, paymentsAmountCents } from '../lib/metrics.js';
 import { emailService } from '../services/email.js';
 import logger from '../lib/logger.js';
@@ -79,6 +80,23 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
         result.processed++;
 
         try {
+          // Check if landlord can collect payments (not over unit limit)
+          const landlordUserId = tenant.unit.property.landlord.user.id;
+          const canCollect = await subscriptionEnforcementService.canCollectPayment(landlordUserId);
+          
+          if (!canCollect.allowed) {
+            logger.warn(
+              { 
+                tenantMembershipId: tenant.id, 
+                landlordUserId,
+                reason: canCollect.reason 
+              },
+              'Skipping autopay - landlord over unit limit'
+            );
+            result.skipped++;
+            continue;
+          }
+
           // Skip if already paid this month
           if (tenant.payments.length > 0) {
             logger.info(

@@ -50,19 +50,19 @@ export async function canAddUnit(userId: string): Promise<{ allowed: boolean; re
   const currentUnitCount = await getUnitCount(userId);
   const plan = getPlan(user.planType as PlanType);
 
-  if (currentUnitCount >= plan.unitLimit) {
+  if (currentUnitCount >= plan.limits.units) {
     return {
       allowed: false,
-      reason: `You've reached your plan limit of ${plan.unitLimit} units. Upgrade to add more.`,
+      reason: `You've reached your plan limit of ${plan.limits.units} units. Upgrade to add more.`,
       currentCount: currentUnitCount,
-      limit: plan.unitLimit
+      limit: plan.limits.units
     };
   }
 
   return {
     allowed: true,
     currentCount: currentUnitCount,
-    limit: plan.unitLimit
+    limit: plan.limits.units
   };
 }
 
@@ -128,7 +128,7 @@ export async function shouldUpgrade(userId: string): Promise<{ shouldUpgrade: bo
   const currentUnitCount = await getUnitCount(userId);
   const currentPlan = getPlan(user.planType as PlanType);
 
-  if (currentUnitCount > currentPlan.unitLimit) {
+  if (currentUnitCount > currentPlan.limits.units) {
     const suggestedPlan = getRecommendedPlan(currentUnitCount);
     return {
       shouldUpgrade: true,
@@ -160,9 +160,9 @@ export async function getSubscriptionDetails(userId: string) {
     planType: user.planType,
     planName: plan.name,
     price: plan.price,
-    unitLimit: plan.unitLimit,
+    unitLimit: plan.limits.units,
     currentUnitCount,
-    unitsRemaining: Math.max(0, plan.unitLimit - currentUnitCount),
+    unitsRemaining: Math.max(0, plan.limits.units - currentUnitCount),
     subscriptionStatus: user.subscriptionStatus,
     isActive,
     isInGracePeriod: gracePeriod,
@@ -180,10 +180,10 @@ export async function canDowngradeToPlain(userId: string, targetPlan: PlanType):
   const currentUnitCount = await getUnitCount(userId);
   const targetPlanConfig = getPlan(targetPlan);
 
-  if (currentUnitCount > targetPlanConfig.unitLimit) {
+  if (currentUnitCount > targetPlanConfig.limits.units) {
     return {
       allowed: false,
-      reason: `You have ${currentUnitCount} units, but the ${targetPlanConfig.name} plan only allows ${targetPlanConfig.unitLimit}. Please remove ${currentUnitCount - targetPlanConfig.unitLimit} unit(s) before downgrading.`
+      reason: `You have ${currentUnitCount} units, but the ${targetPlanConfig.name} plan only allows ${targetPlanConfig.limits.units}. Please remove ${currentUnitCount - targetPlanConfig.limits.units} unit(s) before downgrading.`
     };
   }
 
