@@ -1,6 +1,7 @@
 import Stripe from 'stripe';
 import { APP_CONFIG } from '../config/app.js';
 import { BadRequestError } from '../lib/errors.js';
+import logger from '../lib/logger.js';
 
 // Lazy-load Stripe client
 let stripeClient: Stripe | null = null;
@@ -277,6 +278,81 @@ class StripeService {
     } catch (error) {
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestError(`Webhook signature verification failed: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Preview upcoming invoice for subscription changes
+   * Shows prorated charges before actually making changes
+   */
+  async retrieveUpcomingInvoice(
+    customerId: string,
+    subscriptionId: string,
+    subscriptionItemId: string,
+    newPriceId: string
+  ): Promise<Stripe.Invoice> {
+    try {
+      const client = getStripeClient();
+      
+      // First, retrieve the current subscription to get billing_cycle_anchor
+      const subscription = await client.subscriptions.retrieve(subscriptionId);
+      
+      // Get current timestamp for immediate proration
+      const prorationDate = Math.floor(Date.now() / 1000);
+      
+      const sub = subscription as any;
+      logger.info({
+        subscriptionId,
+        currentPeriodStart: sub.current_period_start as number,
+        currentPeriodEnd: sub.current_period_end as number,
+        billingCycleAnchor: subscription.billing_cycle_anchor,
+        prorationDate,
+        now: Math.floor(Date.now() / 1000),
+      }, 'Subscription billing info before preview');
+      
+      const invoice = await client.invoices.createPreview({
+        customer: customerId,
+        subscription: subscriptionId,
+        subscription_details: {
+          items: [{
+            id: subscriptionItemId,
+            price: newPriceId,
+          }],
+          proration_behavior: 'always_invoice',
+          proration_date: prorationDate,
+        },
+      });
+      
+      //Log the line items to debug proration
+      logger.info({
+        subscriptionId,
+        newPriceId,
+        lineItems: invoice.lines.data.map(l => ({
+          id: l.id,
+          amount: l.amount,
+          description: l.description,
+          periodStart: l.period?.start,
+          periodEnd: l.period?.end,
+        })),
+        amountDue: invoice.amount_due,
+      }, 'Invoice preview line items');
+      
+      console.log('=== INVOICE LINE ITEMS ===');
+      invoice.lines.data.forEach((line, idx) => {
+        console.log(`Line ${idx + 1}:`, {
+          amount: line.amount / 100,
+          description: line.description,
+          period: line.period ? `${new Date(line.period.start * 1000)} to ${new Date(line.period.end * 1000)}` : 'N/A',
+        });
+      });
+      console.log('Total amount due:', invoice.amount_due / 100);
+      
+      return invoice;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Failed to retrieve upcoming invoice: ${error.message}`);
       }
       throw error;
     }

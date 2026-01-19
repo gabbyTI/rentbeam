@@ -48,6 +48,178 @@ router.get('/current', catchAsync(async (req: AuthRequest, res) => {
 }));
 
 /**
+ * GET /api/subscriptions/preview-upgrade
+ * Preview subscription upgrade with proration
+ * Query: planType (starter, growth, professional)
+ */
+router.get('/preview-upgrade', catchAsync(async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+  const { planType } = req.query;
+
+  if (!planType || !['starter', 'growth', 'professional'].includes(planType as string)) {
+    throw new ValidationError('Valid planType required (starter, growth, or professional)');
+  }
+
+  logger.info({ userId, planType }, 'Previewing subscription upgrade');
+
+  // Get current subscription
+  const details = await getSubscriptionDetails(userId);
+  
+  if (!details || !details.stripeSubscriptionId) {
+    throw new NotFoundError('No active subscription found');
+  }
+
+  if (details.subscriptionStatus !== 'active') {
+    throw new ValidationError('Subscription must be active to preview upgrade');
+  }
+
+  const currentPlan = getPlan(details.planType as PlanType);
+  const newPlan = getPlan(planType as PlanType);
+
+  // Validate it's an upgrade
+  if (newPlan.price <= currentPlan.price) {
+    throw new ValidationError(
+      `Cannot upgrade from ${currentPlan.name} ($${currentPlan.price}) to ${newPlan.name} ($${newPlan.price}). Use downgrade endpoint for lower tiers or stay on current plan.`
+    );
+  }
+
+  // Get Stripe subscription to find the item ID
+  const { stripeService } = await import('../services/stripe.js');
+  const Stripe = (await import('stripe')).default;
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-12-15.clover' });
+  
+  // Retrieve subscription
+  const subscription = await stripe.subscriptions.retrieve(details.stripeSubscriptionId);
+  
+  if (!subscription.items.data[0]) {
+    throw new Error('Subscription has no items');
+  }
+
+  const subscriptionItemId = subscription.items.data[0].id;
+  const targetPlanType = planType as PlanType;
+  
+  if (!['starter', 'growth', 'professional'].includes(targetPlanType)) {
+    throw new ValidationError('Invalid plan type');
+  }
+  
+  const newPriceId = STRIPE_PRICE_IDS[targetPlanType as keyof typeof STRIPE_PRICE_IDS];
+
+  // Get upcoming invoice preview
+  const upcomingInvoice = await stripeService.retrieveUpcomingInvoice(
+    details.stripeCustomerId!,
+    details.stripeSubscriptionId,
+    subscriptionItemId,
+    newPriceId
+  );
+
+  // Parse line items - ONLY include items from the proration_date onwards
+  // Filter out any legacy proration items from previous upgrades
+  const now = Math.floor(Date.now() / 1000);
+  let creditAmount = 0;
+  let newPlanCharge = 0;
+  let periodStart: number | undefined;
+  let periodEnd: number | undefined;
+
+  upcomingInvoice.lines.data.forEach((line) => {
+    // Only include line items that start from NOW (not past upgrades)
+    const lineStartTime = line.period?.start || 0;
+    const timeDiff = Math.abs(lineStartTime - now);
+    
+    // Only include items within 5 seconds of current time (to account for minor timing differences)
+    if (timeDiff <= 5) {
+      if (line.amount < 0) {
+        // Negative amounts are credits (unused time on current plan)
+        creditAmount += Math.abs(line.amount);
+      } else if (line.amount > 0) {
+        // Positive amounts are charges (new plan for remaining time)
+        newPlanCharge += line.amount;
+      }
+      
+      // Use the period from the matching line items
+      if (!periodStart && line.period) {
+        periodStart = line.period.start;
+        periodEnd = line.period.end;
+      }
+    }
+  });
+
+  const totalDueNow = newPlanCharge - creditAmount;
+
+  // Fall back to subscription period if not found in line items
+  if (!periodStart || !periodEnd) {
+    const sub = subscription as any;
+    periodStart = sub.current_period_start as number;
+    periodEnd = sub.current_period_end as number;
+  }
+  
+  if (!periodStart || !periodEnd) {
+    const sub = subscription as any;
+    logger.error({ 
+      subscription: {
+        id: subscription.id,
+        current_period_start: sub.current_period_start,
+        current_period_end: sub.current_period_end,
+      },
+      lineItems: upcomingInvoice.lines.data.map(l => ({
+        period: l.period,
+        amount: l.amount,
+        description: l.description,
+      }))
+    }, 'Cannot determine billing period');
+    throw new Error(`Cannot determine billing period from subscription or invoice line items`);
+  }
+  
+  const totalPeriodSeconds = periodEnd - periodStart;
+  const remainingSeconds = periodEnd - now;
+  const usedSeconds = now - periodStart;
+  
+  // Calculate the proration percentage based on time remaining
+  const prorationPercent = remainingSeconds / totalPeriodSeconds;
+  
+  // Manual calculation (in cents)
+  const manualCredit = Math.round(currentPlan.price * 100 * prorationPercent);
+  const manualCharge = Math.round(newPlan.price * 100 * prorationPercent);
+  const manualTotal = manualCharge - manualCredit;
+
+  const periodStartDate = new Date(periodStart * 1000).toISOString().split('T')[0];
+  const periodEndDate = new Date(periodEnd * 1000).toISOString().split('T')[0];
+  const nowDate = new Date(now * 1000).toISOString().split('T')[0];
+
+  res.json(apiResponse({
+    currentPlan: {
+      name: currentPlan.name,
+      price: currentPlan.price,
+    },
+    newPlan: {
+      name: newPlan.name,
+      price: newPlan.price,
+      features: newPlan.features,
+    },
+    stripeCalculation: {
+      creditAmount: creditAmount / 100, // Convert from cents
+      newPlanCharge: newPlanCharge / 100,
+      totalDueNow: totalDueNow / 100,
+      currency: upcomingInvoice.currency,
+    },
+    manualCalculation: {
+      creditAmount: manualCredit / 100,
+      newPlanCharge: manualCharge / 100,
+      totalDueNow: manualTotal / 100,
+      prorationPercent: (prorationPercent * 100).toFixed(2) + '%',
+      billingPeriod: `${periodStartDate} to ${periodEndDate}`,
+      upgradeDate: nowDate,
+      daysUsed: Math.floor(usedSeconds / 86400),
+      daysRemaining: Math.floor(remainingSeconds / 86400),
+      totalDays: Math.floor(totalPeriodSeconds / 86400),
+    },
+    nextBilling: {
+      date: periodEndDate,
+      amount: newPlan.price,
+    },
+  }, 'Upgrade preview generated successfully'));
+}));
+
+/**
  * POST /api/subscriptions
  * Create a new subscription
  * Body: { planType: 'starter' | 'growth' | 'professional' }
