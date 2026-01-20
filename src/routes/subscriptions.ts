@@ -17,6 +17,8 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { ValidationError, NotFoundError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
 import prisma from '../lib/prisma.js';
+import { stripeService } from '../services/stripe.js';
+import Stripe from 'stripe';
 
 const router = Router();
 
@@ -84,11 +86,7 @@ router.get('/preview-upgrade', catchAsync(async (req: AuthRequest, res) => {
   }
 
   // Get Stripe subscription to find the item ID
-  const { stripeService } = await import('../services/stripe.js');
-  const Stripe = (await import('stripe')).default;
   const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-12-15.clover' });
-  
-  // Retrieve subscription
   const subscription = await stripe.subscriptions.retrieve(details.stripeSubscriptionId);
   
   if (!subscription.items.data[0]) {
@@ -362,8 +360,9 @@ router.post('/upgrade', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse({
     id: subscription.id,
     status: subscription.status,
+    hostedInvoiceUrl: (subscription.latest_invoice as any)?.hosted_invoice_url,
     planType
-  }, 'Subscription upgraded successfully. You will be charged the prorated amount.'));
+  }, 'Subscription upgrade initiated. Please complete payment to activate your new plan.'));
 }));
 
 /**

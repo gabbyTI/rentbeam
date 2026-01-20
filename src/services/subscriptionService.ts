@@ -176,18 +176,21 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
 
     // Update subscription with immediate invoice and payment
     // 'always_invoice' creates invoice immediately and attempts payment
+    // 'default_incomplete' keeps subscription unchanged until payment succeeds (handles SCA/3DS)
     const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
       items: [{
         id: subscription.items.data[0].id,
         price: newPriceId,
       }],
       proration_behavior: 'always_invoice',
+      payment_behavior: 'default_incomplete',
       metadata: {
         ...subscription.metadata,
         planType: newPlanType,
         scheduledDowngrade: null,
         scheduledPriceId: null,
-      }
+      },
+      expand: ['latest_invoice'],
     });
 
     // DO NOT update database here - let webhook handle it after payment
@@ -430,12 +433,13 @@ export async function updateUserSubscription(userId: string, subscription: Strip
 
     const plan = getPlan(planType);
 
-    // Only grant benefits if subscription is active/trialing/past_due
-    // Do NOT grant benefits for incomplete (unpaid) subscriptions
-    const shouldGrantBenefits = ['active', 'trialing', 'past_due'].includes(subscription.status);
+    // Only grant benefits if subscription is active or trialing
+    // Do NOT grant benefits for incomplete, past_due, or unpaid subscriptions
+    // User must complete payment before getting upgraded access
+    const shouldGrantBenefits = ['active', 'trialing'].includes(subscription.status);
 
     if (shouldGrantBenefits) {
-      // Full update with benefits
+      // Full update with benefits - user has paid
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -448,8 +452,16 @@ export async function updateUserSubscription(userId: string, subscription: Strip
           cancelAtPeriodEnd: subscription.cancel_at_period_end,
         }
       });
+      
+      logger.info({ 
+        userId, 
+        planType, 
+        status: subscription.status,
+        subscriptionId: subscription.id 
+      }, 'User granted subscription benefits after payment');
     } else {
-      // Only update subscription ID and status, keep user on free plan
+      // Only update subscription ID and status, do NOT grant upgraded plan
+      // User stays on their current plan until they pay
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -458,6 +470,13 @@ export async function updateUserSubscription(userId: string, subscription: Strip
           cancelAtPeriodEnd: subscription.cancel_at_period_end,
         }
       });
+      
+      logger.warn({ 
+        userId, 
+        attemptedPlan: planType, 
+        status: subscription.status,
+        subscriptionId: subscription.id 
+      }, 'Subscription benefits NOT granted - payment required');
     }
   } catch (error) {
     logger.error({ error }, 'Error updating user subscription');
