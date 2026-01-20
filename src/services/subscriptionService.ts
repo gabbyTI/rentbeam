@@ -174,13 +174,14 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
       });
     }
 
-    // Update subscription (prorate by default)
+    // Update subscription with immediate invoice and payment
+    // 'always_invoice' creates invoice immediately and attempts payment
     const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
       items: [{
         id: subscription.items.data[0].id,
         price: newPriceId,
       }],
-      proration_behavior: 'create_prorations',
+      proration_behavior: 'always_invoice',
       metadata: {
         ...subscription.metadata,
         planType: newPlanType,
@@ -189,17 +190,18 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
       }
     });
 
-    // Update database
-    await updateUserSubscription(userId, updatedSubscription);
+    // DO NOT update database here - let webhook handle it after payment
+    // Database will be synced by customer.subscription.updated webhook
 
-    // Log to history
+    // Log upgrade initiation to history
     await prisma.subscriptionHistory.create({
       data: {
         userId: userId,
-        eventType: 'upgraded',
+        eventType: 'upgrade_initiated',
         fromPlan: user.planType,
         toPlan: newPlanType,
         stripeObjectId: updatedSubscription.id,
+        metadata: { status: updatedSubscription.status }
       }
     });
 

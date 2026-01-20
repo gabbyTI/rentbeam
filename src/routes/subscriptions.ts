@@ -520,4 +520,56 @@ router.get('/portal', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse({ url: portalUrl }));
 }));
 
+/**
+ * POST /api/subscriptions/cancel-incomplete
+ * Cancel a subscription stuck in incomplete status
+ */
+router.post('/cancel-incomplete', catchAsync(async (req: AuthRequest, res) => {
+  const userId = req.user!.id;
+
+  logger.info({ userId }, 'Canceling incomplete subscription');
+
+  const currentDetails = await getSubscriptionDetails(userId);
+
+  if (!currentDetails || !currentDetails.stripeSubscriptionId) {
+    throw new NotFoundError('No subscription found to cancel');
+  }
+
+  if (currentDetails.subscriptionStatus !== 'incomplete' && currentDetails.subscriptionStatus !== 'incomplete_expired') {
+    throw new ValidationError(`Cannot cancel subscription with status: ${currentDetails.subscriptionStatus}. This endpoint is only for incomplete subscriptions.`);
+  }
+
+  // Cancel the incomplete subscription
+  await cancelSubscription(currentDetails.stripeSubscriptionId, true);
+
+  // Reset user to free plan
+  await prisma.user.update({
+    where: { id: userId },
+    data: {
+      planType: 'free',
+      unitLimit: 3,
+      subscriptionStatus: null,
+      stripeSubscriptionId: null,
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+    }
+  });
+
+  // Log to history
+  await prisma.subscriptionHistory.create({
+    data: {
+      userId: userId,
+      eventType: 'incomplete_cancelled',
+      fromPlan: currentDetails.planType,
+      toPlan: 'free',
+      stripeObjectId: currentDetails.stripeSubscriptionId,
+    }
+  });
+
+  logger.info({ userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Incomplete subscription cancelled, user reset to free plan');
+
+  res.json(apiResponse(null, 'Incomplete subscription cancelled. You are now on the free plan.'));
+}));
+
 export default router;
