@@ -52,6 +52,8 @@ export async function createCustomer(userId: string, email: string): Promise<str
 
 /**
  * Create a subscription for a user
+ * Returns the Stripe subscription with latest_invoice expanded
+ * Database updates happen via webhook (invoice.paid)
  */
 export async function createSubscription(userId: string, priceId: string): Promise<Stripe.Subscription> {
   try {
@@ -83,7 +85,7 @@ export async function createSubscription(userId: string, priceId: string): Promi
       throw new Error(`You have ${unitCount} units but the ${plan.name} plan only allows ${plan.limits.units} units.`);
     }
 
-    // Create subscription
+    // Create subscription with incomplete status (requires payment)
     const subscription = await stripe.subscriptions.create({
       customer: customerId,
       items: [{ price: priceId }],
@@ -96,26 +98,17 @@ export async function createSubscription(userId: string, priceId: string): Promi
       expand: ['latest_invoice'],
     });
 
-    // Save subscription ID to user so webhooks can find them
-    // Do NOT update planType or unitLimit yet - let webhook handle it after payment
+    // Save ONLY subscription ID so webhook can find the user
+    // Do NOT update planType or unitLimit - webhook handles after payment
     await prisma.user.update({
       where: { id: userId },
       data: {
         stripeSubscriptionId: subscription.id,
-        subscriptionStatus: subscription.status,
+        subscriptionStatus: subscription.status, // 'incomplete'
       }
     });
 
-    // Log to subscription history
-    await prisma.subscriptionHistory.create({
-      data: {
-        userId: userId,
-        eventType: 'created',
-        fromPlan: user.planType,
-        toPlan: planType,
-        stripeObjectId: subscription.id,
-      }
-    });
+    logger.info({ userId, planType, subscriptionId: subscription.id }, 'Subscription created - awaiting payment');
 
     return subscription;
   } catch (error) {
@@ -126,6 +119,8 @@ export async function createSubscription(userId: string, priceId: string): Promi
 
 /**
  * Upgrade a user's subscription to a higher tier
+ * Creates a prorated invoice and requires payment
+ * Database updates happen via webhook (invoice.paid)
  */
 export async function upgradeSubscription(userId: string, newPriceId: string): Promise<Stripe.Subscription> {
   try {
@@ -154,29 +149,7 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
     // Get current subscription
     const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
 
-    // Check if there's a scheduled downgrade and log its cancellation
-    if (subscription.metadata?.scheduledDowngrade) {
-      logger.info({ 
-        userId,
-        scheduledPlan: subscription.metadata.scheduledDowngrade,
-        newPlan: newPlanType
-      }, 'Clearing scheduled downgrade due to upgrade');
-      
-      await prisma.subscriptionHistory.create({
-        data: {
-          userId: userId,
-          eventType: 'downgrade_cancelled',
-          fromPlan: user.planType,
-          toPlan: subscription.metadata.scheduledDowngrade as PlanType,
-          stripeObjectId: subscription.id,
-          metadata: { reason: 'user_upgraded' }
-        }
-      });
-    }
-
-    // Update subscription with immediate invoice and payment
-    // 'always_invoice' creates invoice immediately and attempts payment
-    // 'default_incomplete' keeps subscription unchanged until payment succeeds (handles SCA/3DS)
+    // Update subscription with proration - creates invoice requiring payment
     const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
       items: [{
         id: subscription.items.data[0].id,
@@ -187,27 +160,18 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
       metadata: {
         ...subscription.metadata,
         planType: newPlanType,
-        scheduledDowngrade: null,
-        scheduledPriceId: null,
       },
       expand: ['latest_invoice'],
     });
 
-    // DO NOT update database here - let webhook handle it after payment
-    // Database will be synced by customer.subscription.updated webhook
+    logger.info({ 
+      userId, 
+      fromPlan: user.planType, 
+      toPlan: newPlanType, 
+      subscriptionId: subscription.id 
+    }, 'Upgrade initiated - awaiting payment');
 
-    // Log upgrade initiation to history
-    await prisma.subscriptionHistory.create({
-      data: {
-        userId: userId,
-        eventType: 'upgrade_initiated',
-        fromPlan: user.planType,
-        toPlan: newPlanType,
-        stripeObjectId: updatedSubscription.id,
-        metadata: { status: updatedSubscription.status }
-      }
-    });
-
+    // NOTE: Database NOT updated here - webhook handles after payment
     return updatedSubscription;
   } catch (error) {
     logger.error({ error }, 'Error upgrading subscription');
@@ -217,6 +181,8 @@ export async function upgradeSubscription(userId: string, newPriceId: string): P
 
 /**
  * Downgrade a user's subscription (scheduled for end of period)
+ * Uses Stripe subscription schedules to change price at renewal
+ * Database updates happen via webhook at period end
  */
 export async function downgradeSubscription(userId: string, newPriceId: string): Promise<Stripe.Subscription> {
   try {
@@ -242,34 +208,60 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
       throw new Error(`You have ${unitCount} units but the ${newPlan.name} plan only allows ${newPlan.limits.units}. Please remove ${unitCount - newPlan.limits.units} unit(s) before downgrading.`);
     }
 
-    // Schedule downgrade at period end by storing in subscription metadata
+    // Get subscription
     const subscription = await stripe.subscriptions.retrieve(user.stripeSubscriptionId);
     
-    const updatedSubscription = await stripe.subscriptions.update(subscription.id, {
-      metadata: {
-        ...subscription.metadata,
-        scheduledDowngrade: newPlanType,
-        scheduledPriceId: newPriceId,
-      }
-    });
-
-    // Log to history
-    const effectiveDate = subscription.items.data[0].current_period_end 
-      ? new Date(subscription.items.data[0].current_period_end * 1000).toISOString()
-      : 'unknown';
+    // Schedule downgrade using subscription schedule
+    // This changes the price at the next billing period
+    let schedule;
+    if (subscription.schedule) {
+      // Update existing schedule
+      schedule = await stripe.subscriptionSchedules.update(subscription.schedule as string, {
+        phases: [
+          {
+            items: [{ price: subscription.items.data[0].price.id, quantity: 1 }],
+            start_date: subscription.items.data[0].current_period_start,
+            end_date: subscription.items.data[0].current_period_end,
+          },
+          {
+            items: [{ price: newPriceId, quantity: 1 }],
+            start_date: subscription.items.data[0].current_period_end,
+          },
+        ],
+      });
+    } else {
+      // Create new schedule from subscription
+      schedule = await stripe.subscriptionSchedules.create({
+        from_subscription: subscription.id,
+      });
       
-    await prisma.subscriptionHistory.create({
-      data: {
-        userId: userId,
-        eventType: 'downgrade_scheduled',
-        fromPlan: user.planType,
-        toPlan: newPlanType,
-        stripeObjectId: updatedSubscription.id,
-        metadata: { scheduledFor: 'end_of_period', effectiveDate }
-      }
-    });
+      // Update the schedule with the downgrade
+      await stripe.subscriptionSchedules.update(schedule.id, {
+        phases: [
+          {
+            items: [{ price: subscription.items.data[0].price.id, quantity: 1 }],
+            start_date: subscription.items.data[0].current_period_start,
+            end_date: subscription.items.data[0].current_period_end,
+          },
+          {
+            items: [{ price: newPriceId, quantity: 1 }],
+            start_date: subscription.items.data[0].current_period_end,
+          },
+        ],
+      });
+    }
 
-    return updatedSubscription;
+    const periodEnd = new Date(subscription.items.data[0].current_period_end * 1000);
+    
+    logger.info({ 
+      userId, 
+      fromPlan: user.planType, 
+      toPlan: newPlanType, 
+      effectiveDate: periodEnd.toISOString()
+    }, 'Downgrade scheduled for period end');
+
+    // NOTE: Database NOT updated here - webhook handles at period end
+    return subscription;
   } catch (error) {
     logger.error({ error }, 'Error downgrading subscription');
     throw error;
@@ -277,78 +269,30 @@ export async function downgradeSubscription(userId: string, newPriceId: string):
 }
 
 /**
- * Cancel a subscription (at end of period)
+ * Cancel a subscription (at end of period or immediately)
+ * Database updates happen via webhook
  */
 export async function cancelSubscription(subscriptionId: string, immediately: boolean = false): Promise<Stripe.Subscription> {
   try {
-    // Retrieve subscription to check for scheduled downgrade
-    const existingSub = await stripe.subscriptions.retrieve(subscriptionId);
+    let subscription: Stripe.Subscription;
     
-    // Log if cancelling a scheduled downgrade
-    if (existingSub.metadata?.scheduledDowngrade) {
-      const user = await prisma.user.findFirst({
-        where: { stripeSubscriptionId: subscriptionId }
-      });
-      
-      if (user) {
-        logger.info({ 
-          subscriptionId,
-          scheduledPlan: existingSub.metadata.scheduledDowngrade
-        }, 'Clearing scheduled downgrade due to cancellation');
-        
-        await prisma.subscriptionHistory.create({
-          data: {
-            userId: user.id,
-            eventType: 'downgrade_cancelled',
-            fromPlan: user.planType,
-            toPlan: existingSub.metadata.scheduledDowngrade as PlanType,
-            stripeObjectId: subscriptionId,
-            metadata: { reason: 'user_cancelled_subscription' }
-          }
-        });
-      }
-    }
-    
-    const subscription = await stripe.subscriptions.update(subscriptionId, {
-      cancel_at_period_end: !immediately,
-      metadata: {
-        ...existingSub.metadata,
-        scheduledDowngrade: null,
-        scheduledPriceId: null,
-      }
-    });
-
     if (immediately) {
-      await stripe.subscriptions.cancel(subscriptionId);
-    }
-
-    // Update user
-    const user = await prisma.user.findFirst({
-      where: { stripeSubscriptionId: subscriptionId }
-    });
-
-    if (user) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          cancelAtPeriodEnd: !immediately,
-          subscriptionStatus: immediately ? 'canceled' : subscription.status,
-        }
-      });
-
-      // Log to history
-      await prisma.subscriptionHistory.create({
-        data: {
-          userId: user.id,
-          eventType: 'canceled',
-          fromPlan: user.planType,
-          toPlan: immediately ? 'free' : user.planType,
-          stripeObjectId: subscriptionId,
-          metadata: { immediately }
-        }
+      // Cancel immediately - triggers subscription.deleted webhook
+      subscription = await stripe.subscriptions.cancel(subscriptionId);
+    } else {
+      // Schedule cancellation at period end - triggers subscription.updated webhook
+      subscription = await stripe.subscriptions.update(subscriptionId, {
+        cancel_at_period_end: true,
       });
     }
 
+    logger.info({ 
+      subscriptionId, 
+      immediately, 
+      cancelAtPeriodEnd: subscription.cancel_at_period_end 
+    }, 'Subscription cancellation processed');
+
+    // NOTE: Database NOT updated here - webhook handles it
     return subscription;
   } catch (error) {
     logger.error({ error }, 'Error canceling subscription');
@@ -358,6 +302,7 @@ export async function cancelSubscription(subscriptionId: string, immediately: bo
 
 /**
  * Reactivate a canceled subscription (undo cancel_at_period_end)
+ * Database updates happen via webhook
  */
 export async function reactivateSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
   try {
@@ -365,31 +310,9 @@ export async function reactivateSubscription(subscriptionId: string): Promise<St
       cancel_at_period_end: false,
     });
 
-    // Update user
-    const user = await prisma.user.findFirst({
-      where: { stripeSubscriptionId: subscriptionId }
-    });
+    logger.info({ subscriptionId }, 'Subscription reactivated');
 
-    if (user) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          cancelAtPeriodEnd: false,
-        }
-      });
-
-      // Log to history
-      await prisma.subscriptionHistory.create({
-        data: {
-          userId: user.id,
-          eventType: 'reactivated',
-          fromPlan: user.planType,
-          toPlan: user.planType,
-          stripeObjectId: subscriptionId,
-        }
-      });
-    }
-
+    // NOTE: Database NOT updated here - webhook handles it
     return subscription;
   } catch (error) {
     logger.error({ error }, 'Error reactivating subscription');
@@ -415,246 +338,43 @@ export async function getCustomerPortalUrl(customerId: string, returnUrl: string
 }
 
 /**
- * Update user subscription data in database from Stripe subscription object
+ * Cancel an incomplete subscription (cleanup abandoned checkouts)
+ * Used when user abandons payment and wants to try again
  */
-export async function updateUserSubscription(userId: string, subscription: Stripe.Subscription): Promise<void> {
+export async function cancelIncompleteSubscription(subscriptionId: string): Promise<void> {
   try {
-    // Determine plan type from metadata or price ID
-    let planType: PlanType = 'free';
-    
-    if (subscription.metadata?.planType) {
-      planType = subscription.metadata.planType as PlanType;
-    } else {
-      const priceId = subscription.items.data[0]?.price.id;
-      if (priceId === STRIPE_PRICE_IDS.starter) planType = 'starter';
-      else if (priceId === STRIPE_PRICE_IDS.growth) planType = 'growth';
-      else if (priceId === STRIPE_PRICE_IDS.professional) planType = 'professional';
-    }
-
-    const plan = getPlan(planType);
-
-    // Only grant benefits if subscription is active or trialing
-    // Do NOT grant benefits for incomplete, past_due, or unpaid subscriptions
-    // User must complete payment before getting upgraded access
-    const shouldGrantBenefits = ['active', 'trialing'].includes(subscription.status);
-
-    if (shouldGrantBenefits) {
-      // Full update with benefits - user has paid
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          stripeSubscriptionId: subscription.id,
-          subscriptionStatus: subscription.status,
-          planType: planType,
-          unitLimit: plan.limits.units,
-          currentPeriodStart: new Date(subscription.items.data[0].current_period_start * 1000),
-          currentPeriodEnd: new Date(subscription.items.data[0].current_period_end * 1000),
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        }
-      });
-      
-      logger.info({ 
-        userId, 
-        planType, 
-        status: subscription.status,
-        subscriptionId: subscription.id 
-      }, 'User granted subscription benefits after payment');
-    } else {
-      // Only update subscription ID and status, do NOT grant upgraded plan
-      // User stays on their current plan until they pay
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          stripeSubscriptionId: subscription.id,
-          subscriptionStatus: subscription.status,
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
-        }
-      });
-      
-      logger.warn({ 
-        userId, 
-        attemptedPlan: planType, 
-        status: subscription.status,
-        subscriptionId: subscription.id 
-      }, 'Subscription benefits NOT granted - payment required');
-    }
+    await stripe.subscriptions.cancel(subscriptionId);
+    logger.info({ subscriptionId }, 'Incomplete subscription cancelled');
   } catch (error) {
-    logger.error({ error }, 'Error updating user subscription');
+    logger.error({ error, subscriptionId }, 'Error cancelling incomplete subscription');
     throw error;
   }
 }
 
 /**
- * Sync subscription status from Stripe (for manual refresh)
+ * Cancel any scheduled downgrade for a subscription
+ * Used when user upgrades after scheduling a downgrade
  */
-export async function syncSubscriptionStatus(subscriptionId: string): Promise<void> {
+export async function cancelScheduledDowngrade(subscriptionId: string): Promise<void> {
   try {
-    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-    
-    // Try to find user by subscription ID first
-    let user = await prisma.user.findFirst({
-      where: { stripeSubscriptionId: subscriptionId }
+    // Find schedules associated with this subscription
+    const schedules = await stripe.subscriptionSchedules.list({
+      customer: (await stripe.subscriptions.retrieve(subscriptionId)).customer as string,
+      limit: 10,
     });
 
-    // If not found (race condition - webhook arrived before we saved subscription ID),
-    // try finding by customer ID
-    if (!user && typeof subscription.customer === 'string') {
-      user = await prisma.user.findFirst({
-        where: { stripeCustomerId: subscription.customer }
-      });
-      
-      // If we found the user by customer ID, this is a race condition scenario
-      // The subscription creation is still in progress, so just skip this webhook
-      // The app will handle the subscription setup after creation completes
-      if (user) {
-        logger.warn({ 
-          subscriptionId, 
-          customerId: subscription.customer,
-          userId: user.id 
-        }, 'Race condition detected: webhook arrived before subscription ID saved. Skipping sync.');
-        return;
-      }
+    // Find active schedule for this subscription
+    const activeSchedule = schedules.data.find(
+      s => s.subscription === subscriptionId && ['active', 'not_started'].includes(s.status)
+    );
+
+    if (activeSchedule) {
+      // Release the schedule (keeps current subscription as-is)
+      await stripe.subscriptionSchedules.release(activeSchedule.id);
+      logger.info({ scheduleId: activeSchedule.id, subscriptionId }, 'Scheduled downgrade cancelled');
     }
-
-    if (!user) {
-      throw new Error('User not found for subscription');
-    }
-
-    // Check if there's a scheduled downgrade to apply
-    if (subscription.metadata?.scheduledDowngrade && subscription.metadata?.scheduledPriceId) {
-      const currentPeriodStart = new Date((subscription as any).current_period_start * 1000);
-      const lastKnownPeriodStart = user.currentPeriodStart;
-
-      // If period just renewed (new period start), apply the scheduled downgrade
-      if (!lastKnownPeriodStart || currentPeriodStart > lastKnownPeriodStart) {
-        const scheduledPlan = subscription.metadata.scheduledDowngrade as PlanType;
-        
-        logger.info({ subscriptionId, scheduledPlan }, 'Applying scheduled downgrade at period renewal');
-        
-        // Re-validate unit count before applying downgrade
-        const currentUnitCount = await getUnitCount(user.id);
-        const targetPlan = getPlan(scheduledPlan);
-        
-        if (currentUnitCount > targetPlan.limits.units) {
-          // User has too many units - block the downgrade
-          logger.warn({ 
-            subscriptionId, 
-            scheduledPlan, 
-            currentUnitCount, 
-            targetLimit: targetPlan.limits.units,
-            userId: user.id
-          }, 'Scheduled downgrade blocked - user has too many units');
-          
-          // Clear the scheduled downgrade
-          await stripe.subscriptions.update(subscriptionId, {
-            metadata: {
-              ...subscription.metadata,
-              scheduledDowngrade: null,
-              scheduledPriceId: null,
-            },
-          });
-          
-          // Log blocked event
-          await prisma.subscriptionHistory.create({
-            data: {
-              userId: user.id,
-              eventType: 'downgrade_blocked',
-              fromPlan: user.planType,
-              toPlan: scheduledPlan,
-              stripeObjectId: subscriptionId,
-              metadata: { 
-                reason: 'too_many_units',
-                currentUnits: currentUnitCount,
-                targetLimit: targetPlan.limits.units
-              }
-            }
-          });
-          
-          // TODO: Send email notification to user
-          logger.info({ userId: user.id }, 'TODO: Send email about blocked downgrade');
-          
-          return;
-        }
-        
-        // Apply the downgrade
-        await stripe.subscriptions.update(subscriptionId, {
-          items: [{
-            id: subscription.items.data[0].id,
-            price: subscription.metadata.scheduledPriceId,
-          }],
-          metadata: {
-            ...subscription.metadata,
-            planType: subscription.metadata.scheduledDowngrade,
-            scheduledDowngrade: null,
-            scheduledPriceId: null,
-          },
-          proration_behavior: 'none',
-        });
-
-        // Retrieve updated subscription
-        const updatedSub = await stripe.subscriptions.retrieve(subscriptionId);
-        await updateUserSubscription(user.id, updatedSub);
-
-        // Log completion
-        await prisma.subscriptionHistory.create({
-          data: {
-            userId: user.id,
-            eventType: 'downgraded',
-            fromPlan: user.planType,
-            toPlan: scheduledPlan,
-            stripeObjectId: subscriptionId,
-          }
-        });
-        return;
-      }
-    }
-
-    await updateUserSubscription(user.id, subscription);
   } catch (error) {
-    logger.error({ error }, 'Error syncing subscription status');
-    throw error;
-  }
-}
-
-/**
- * Handle subscription deletion (downgrade to free)
- */
-export async function handleSubscriptionDeleted(subscriptionId: string): Promise<void> {
-  try {
-    const user = await prisma.user.findFirst({
-      where: { stripeSubscriptionId: subscriptionId }
-    });
-
-    if (!user) {
-      return;
-    }
-
-    // Downgrade to free tier
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        stripeSubscriptionId: null,
-        subscriptionStatus: 'canceled',
-        planType: 'free',
-        unitLimit: 3,
-        currentPeriodStart: null,
-        currentPeriodEnd: null,
-        cancelAtPeriodEnd: false,
-      }
-    });
-
-    // Log to history
-    await prisma.subscriptionHistory.create({
-      data: {
-        userId: user.id,
-        eventType: 'canceled',
-        fromPlan: user.planType,
-        toPlan: 'free',
-        stripeObjectId: subscriptionId,
-      }
-    });
-  } catch (error) {
-    console.error('Error handling subscription deletion:', error);
-    throw error;
+    // Log but don't throw - this is a best-effort cleanup
+    logger.warn({ error, subscriptionId }, 'No scheduled downgrade found or error cancelling');
   }
 }

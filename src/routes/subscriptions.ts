@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { AuthRequest, authenticate } from '../middleware/auth.js';
 import { STRIPE_PRICE_IDS, PlanType } from '../config/stripe.js';
 import { getPlan } from '../config/plans.js';
-import { getSubscriptionDetails } from '../utils/subscriptionHelpers.js';
+import { getSubscriptionDetails, SubscriptionDetails } from '../utils/subscriptionHelpers.js';
 import { subscriptionEnforcementService } from '../services/subscriptionEnforcementService.js';
 import {
   createSubscription,
@@ -11,23 +11,93 @@ import {
   cancelSubscription,
   reactivateSubscription,
   getCustomerPortalUrl,
+  cancelIncompleteSubscription,
+  cancelScheduledDowngrade,
 } from '../services/subscriptionService.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
-import { ValidationError, NotFoundError } from '../lib/errors.js';
+import { ValidationError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
 import prisma from '../lib/prisma.js';
-import { stripeService } from '../services/stripe.js';
 import Stripe from 'stripe';
 
 const router = Router();
+
+// Initialize Stripe once for all routes
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-12-15.clover' });
+
+// Plan tier ordering for upgrade/downgrade validation
+const PLAN_TIERS: Record<string, number> = { free: 0, starter: 1, growth: 2, professional: 3 };
+
+/**
+ * Validate subscription state for operations
+ * Centralizes all state validation logic to avoid redundant checks
+ */
+function validateSubscriptionState(
+  details: SubscriptionDetails | null,
+  operation: 'create' | 'upgrade' | 'downgrade' | 'cancel' | 'reactivate'
+): void {
+  const status = details?.subscriptionStatus;
+  const hasSub = !!details?.stripeSubscriptionId;
+  const planType = details?.planType || 'free';
+
+  switch (operation) {
+    case 'create':
+      // Can only create if no active subscription
+      if (hasSub && ['active', 'trialing', 'past_due'].includes(status || '')) {
+        throw new ValidationError('You already have an active subscription. Use upgrade or downgrade instead.');
+      }
+      if (planType !== 'free') {
+        throw new ValidationError(`You are already on the ${planType} plan.`);
+      }
+      break;
+
+    case 'upgrade':
+      // Must have active subscription
+      if (!hasSub) {
+        throw new ValidationError('You do not have an active subscription to upgrade.');
+      }
+      // Must be in good standing
+      if (!['active', 'trialing'].includes(status || '')) {
+        throw new ValidationError(`Cannot upgrade with status: ${status}. Please resolve payment issues first.`);
+      }
+      break;
+
+    case 'downgrade':
+      // Must have active subscription
+      if (!hasSub) {
+        throw new ValidationError('You do not have an active subscription to downgrade.');
+      }
+      // Must be in good standing
+      if (!['active', 'trialing'].includes(status || '')) {
+        throw new ValidationError(`Cannot downgrade with status: ${status}. Please resolve payment issues first.`);
+      }
+      break;
+
+    case 'cancel':
+      if (!hasSub) {
+        throw new ValidationError('No active subscription to cancel.');
+      }
+      break;
+
+    case 'reactivate':
+      if (!hasSub) {
+        throw new ValidationError('No subscription to reactivate.');
+      }
+      if (!details?.cancelAtPeriodEnd) {
+        throw new ValidationError('Subscription is not scheduled for cancellation.');
+      }
+      break;
+  }
+}
 
 // All routes require authentication
 router.use(authenticate);
 
 /**
  * GET /api/subscriptions/current
- * Get current subscription details
+ * Get current subscription details from DATABASE only (no Stripe calls)
+ * Database is the source of truth for what user has PAID for
  */
 router.get('/current', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -38,6 +108,15 @@ router.get('/current', catchAsync(async (req: AuthRequest, res) => {
   
   // Add enforcement state
   const enforcementState = await subscriptionEnforcementService.getEnforcementState(userId);
+
+  // Simple response from database - no Stripe API calls needed
+  // subscriptionStatus tells frontend what state we're in:
+  // - null/undefined: free plan (no subscription)
+  // - 'active': paid and working
+  // - 'trialing': in trial period
+  // - 'incomplete': first payment pending
+  // - 'past_due': renewal payment failed
+  // - 'canceled': subscription ended
 
   res.json(apiResponse({
     ...details,
@@ -50,177 +129,10 @@ router.get('/current', catchAsync(async (req: AuthRequest, res) => {
 }));
 
 /**
- * GET /api/subscriptions/preview-upgrade
- * Preview subscription upgrade with proration
- * Query: planType (starter, growth, professional)
- */
-router.get('/preview-upgrade', catchAsync(async (req: AuthRequest, res) => {
-  const userId = req.user!.id;
-  const { planType } = req.query;
-
-  if (!planType || !['starter', 'growth', 'professional'].includes(planType as string)) {
-    throw new ValidationError('Valid planType required (starter, growth, or professional)');
-  }
-
-  logger.info({ userId, planType }, 'Previewing subscription upgrade');
-
-  // Get current subscription
-  const details = await getSubscriptionDetails(userId);
-  
-  if (!details || !details.stripeSubscriptionId) {
-    throw new NotFoundError('No active subscription found');
-  }
-
-  if (details.subscriptionStatus !== 'active') {
-    throw new ValidationError('Subscription must be active to preview upgrade');
-  }
-
-  const currentPlan = getPlan(details.planType as PlanType);
-  const newPlan = getPlan(planType as PlanType);
-
-  // Validate it's an upgrade
-  if (newPlan.price <= currentPlan.price) {
-    throw new ValidationError(
-      `Cannot upgrade from ${currentPlan.name} ($${currentPlan.price}) to ${newPlan.name} ($${newPlan.price}). Use downgrade endpoint for lower tiers or stay on current plan.`
-    );
-  }
-
-  // Get Stripe subscription to find the item ID
-  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-12-15.clover' });
-  const subscription = await stripe.subscriptions.retrieve(details.stripeSubscriptionId);
-  
-  if (!subscription.items.data[0]) {
-    throw new Error('Subscription has no items');
-  }
-
-  const subscriptionItemId = subscription.items.data[0].id;
-  const targetPlanType = planType as PlanType;
-  
-  if (!['starter', 'growth', 'professional'].includes(targetPlanType)) {
-    throw new ValidationError('Invalid plan type');
-  }
-  
-  const newPriceId = STRIPE_PRICE_IDS[targetPlanType as keyof typeof STRIPE_PRICE_IDS];
-
-  // Get upcoming invoice preview
-  const upcomingInvoice = await stripeService.retrieveUpcomingInvoice(
-    details.stripeCustomerId!,
-    details.stripeSubscriptionId,
-    subscriptionItemId,
-    newPriceId
-  );
-
-  // Parse line items - ONLY include items from the proration_date onwards
-  // Filter out any legacy proration items from previous upgrades
-  const now = Math.floor(Date.now() / 1000);
-  let creditAmount = 0;
-  let newPlanCharge = 0;
-  let periodStart: number | undefined;
-  let periodEnd: number | undefined;
-
-  upcomingInvoice.lines.data.forEach((line) => {
-    // Only include line items that start from NOW (not past upgrades)
-    const lineStartTime = line.period?.start || 0;
-    const timeDiff = Math.abs(lineStartTime - now);
-    
-    // Only include items within 5 seconds of current time (to account for minor timing differences)
-    if (timeDiff <= 5) {
-      if (line.amount < 0) {
-        // Negative amounts are credits (unused time on current plan)
-        creditAmount += Math.abs(line.amount);
-      } else if (line.amount > 0) {
-        // Positive amounts are charges (new plan for remaining time)
-        newPlanCharge += line.amount;
-      }
-      
-      // Use the period from the matching line items
-      if (!periodStart && line.period) {
-        periodStart = line.period.start;
-        periodEnd = line.period.end;
-      }
-    }
-  });
-
-  const totalDueNow = newPlanCharge - creditAmount;
-
-  // Fall back to subscription period if not found in line items
-  if (!periodStart || !periodEnd) {
-    const sub = subscription as any;
-    periodStart = sub.current_period_start as number;
-    periodEnd = sub.current_period_end as number;
-  }
-  
-  if (!periodStart || !periodEnd) {
-    const sub = subscription as any;
-    logger.error({ 
-      subscription: {
-        id: subscription.id,
-        current_period_start: sub.current_period_start,
-        current_period_end: sub.current_period_end,
-      },
-      lineItems: upcomingInvoice.lines.data.map(l => ({
-        period: l.period,
-        amount: l.amount,
-        description: l.description,
-      }))
-    }, 'Cannot determine billing period');
-    throw new Error(`Cannot determine billing period from subscription or invoice line items`);
-  }
-  
-  const totalPeriodSeconds = periodEnd - periodStart;
-  const remainingSeconds = periodEnd - now;
-  const usedSeconds = now - periodStart;
-  
-  // Calculate the proration percentage based on time remaining
-  const prorationPercent = remainingSeconds / totalPeriodSeconds;
-  
-  // Manual calculation (in cents)
-  const manualCredit = Math.round(currentPlan.price * 100 * prorationPercent);
-  const manualCharge = Math.round(newPlan.price * 100 * prorationPercent);
-  const manualTotal = manualCharge - manualCredit;
-
-  const periodStartDate = new Date(periodStart * 1000).toISOString().split('T')[0];
-  const periodEndDate = new Date(periodEnd * 1000).toISOString().split('T')[0];
-  const nowDate = new Date(now * 1000).toISOString().split('T')[0];
-
-  res.json(apiResponse({
-    currentPlan: {
-      name: currentPlan.name,
-      price: currentPlan.price,
-    },
-    newPlan: {
-      name: newPlan.name,
-      price: newPlan.price,
-      features: newPlan.features,
-    },
-    stripeCalculation: {
-      creditAmount: creditAmount / 100, // Convert from cents
-      newPlanCharge: newPlanCharge / 100,
-      totalDueNow: totalDueNow / 100,
-      currency: upcomingInvoice.currency,
-    },
-    manualCalculation: {
-      creditAmount: manualCredit / 100,
-      newPlanCharge: manualCharge / 100,
-      totalDueNow: manualTotal / 100,
-      prorationPercent: (prorationPercent * 100).toFixed(2) + '%',
-      billingPeriod: `${periodStartDate} to ${periodEndDate}`,
-      upgradeDate: nowDate,
-      daysUsed: Math.floor(usedSeconds / 86400),
-      daysRemaining: Math.floor(remainingSeconds / 86400),
-      totalDays: Math.floor(totalPeriodSeconds / 86400),
-    },
-    nextBilling: {
-      date: periodEndDate,
-      amount: newPlan.price,
-    },
-  }, 'Upgrade preview generated successfully'));
-}));
-
-/**
  * POST /api/subscriptions
- * Create a new subscription
- * Body: { planType: 'starter' | 'growth' | 'professional' }
+ * Create a new subscription (free -> paid)
+ * Returns checkout URL - user redirects there to pay
+ * Database updated by webhook after payment succeeds
  */
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -232,86 +144,53 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
   logger.info({ userId, planType }, 'Creating new subscription');
 
-  // Check if user already has a subscription
-  const currentDetails = await getSubscriptionDetails(userId);
+  // Get current state and clean up any incomplete subscriptions
+  let currentDetails = await getSubscriptionDetails(userId);
   
-  // If user has an incomplete or incomplete_expired subscription, cancel it before creating new one
-  if (currentDetails && currentDetails.stripeSubscriptionId && 
-      (currentDetails.subscriptionStatus === 'incomplete' || currentDetails.subscriptionStatus === 'incomplete_expired')) {
-    logger.info({ 
-      userId, 
-      oldSubscriptionId: currentDetails.stripeSubscriptionId,
-      oldStatus: currentDetails.subscriptionStatus,
-      newPlan: planType 
-    }, 'Canceling old incomplete subscription before creating new one');
+  if (currentDetails?.stripeSubscriptionId && 
+      ['incomplete', 'incomplete_expired'].includes(currentDetails.subscriptionStatus || '')) {
+    logger.info({ userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Cleaning up incomplete subscription');
     
     try {
-      // Cancel the old incomplete subscription
-      await cancelSubscription(currentDetails.stripeSubscriptionId, true);
-      
-      // Clear from database
+      await cancelIncompleteSubscription(currentDetails.stripeSubscriptionId);
+      // Clear local state immediately so validation passes
       await prisma.user.update({
         where: { id: userId },
-        data: {
-          stripeSubscriptionId: null,
-          subscriptionStatus: null,
-        }
+        data: { stripeSubscriptionId: null, subscriptionStatus: null }
       });
-      
-      // Log cleanup
-      await prisma.subscriptionHistory.create({
-        data: {
-          userId: userId,
-          eventType: 'incomplete_cleaned',
-          fromPlan: currentDetails.planType,
-          toPlan: 'free',
-          stripeObjectId: currentDetails.stripeSubscriptionId,
-          metadata: { reason: 'creating_new_subscription' }
-        }
-      });
+      // Refresh details after cleanup
+      currentDetails = await getSubscriptionDetails(userId);
     } catch (error) {
-      logger.error({ error, userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Failed to cancel old incomplete subscription');
-      // Continue anyway - the new subscription creation will fail if there's still a conflict
+      logger.error({ error, userId }, 'Failed to clean up incomplete subscription');
+      // Continue anyway - Stripe will handle duplicate subscription logic
     }
   }
   
-  // Block if user has active/paid subscription (but allow incomplete/incomplete_expired which will be cleaned up above)
-  if (currentDetails && currentDetails.stripeSubscriptionId && 
-      currentDetails.subscriptionStatus !== 'incomplete' && 
-      currentDetails.subscriptionStatus !== 'incomplete_expired') {
-    logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but already has one');
-    throw new ValidationError('You already have an active subscription. Use upgrade or downgrade instead.');
-  }
+  // Validate subscription state
+  validateSubscriptionState(currentDetails, 'create');
 
-  // Verify user is on free plan (or incomplete subscription that never got paid)
-  if (currentDetails && currentDetails.planType !== 'free') {
-    logger.warn({ userId, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to create subscription but is not on free plan');
-    throw new ValidationError(`You are already on the ${currentDetails.planType} plan. Use upgrade or downgrade to change plans.`);
-  }
-
-  // Get the price ID for the plan
   const priceId = STRIPE_PRICE_IDS[planType as keyof typeof STRIPE_PRICE_IDS];
+  if (!priceId) throw new ValidationError('Invalid plan type');
 
-  if (!priceId) {
-    throw new ValidationError('Invalid plan type');
-  }
-
+  // Create subscription - returns with latest_invoice expanded
   const subscription = await createSubscription(userId, priceId);
+  const invoice = subscription.latest_invoice as Stripe.Invoice;
 
-  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Subscription created successfully');
+  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Subscription created - awaiting payment');
 
   res.status(201).json(apiResponse({
-    id: subscription.id,
+    subscriptionId: subscription.id,
     status: subscription.status,
-    hostedInvoiceUrl: (subscription.latest_invoice as any)?.hosted_invoice_url,
+    hostedInvoiceUrl: invoice?.hosted_invoice_url,
     planType
-  }, 'Subscription created successfully'));
+  }, 'Complete payment to activate your subscription.'));
 }));
 
 /**
  * POST /api/subscriptions/upgrade
  * Upgrade to a higher tier plan
- * Body: { planType: 'starter' | 'growth' | 'professional' }
+ * Returns checkout URL for prorated payment
+ * Database updated by webhook after payment succeeds
  */
 router.post('/upgrade', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -323,102 +202,117 @@ router.post('/upgrade', catchAsync(async (req: AuthRequest, res) => {
 
   logger.info({ userId, planType }, 'Upgrading subscription');
 
-  // Check if user has a subscription
+  // Check current state
   const currentDetails = await getSubscriptionDetails(userId);
-  if (!currentDetails || !currentDetails.stripeSubscriptionId) {
-    logger.warn({ userId, attemptedPlan: planType }, 'User attempted to upgrade but has no active subscription');
-    throw new ValidationError('You do not have an active subscription to upgrade. Create a new subscription first.');
-  }
-
-  // Check if subscription is active
-  if (!['active', 'trialing'].includes(currentDetails.subscriptionStatus || '')) {
-    logger.warn({ userId, currentStatus: currentDetails.subscriptionStatus, currentPlan: currentDetails.planType, attemptedPlan: planType }, 'User attempted to upgrade with non-active subscription');
-    throw new ValidationError(`Cannot upgrade subscription with status: ${currentDetails.subscriptionStatus}. Please resolve payment issues first.`);
-  }
+  validateSubscriptionState(currentDetails, 'upgrade');
 
   // Validate it's actually an upgrade (higher tier)
-  const currentPlan = getPlan(currentDetails.planType as PlanType);
-  const newPlan = getPlan(planType as PlanType);
+  const currentTier = PLAN_TIERS[currentDetails!.planType] || 0;
+  const newTier = PLAN_TIERS[planType] || 0;
   
-  if (newPlan.price <= currentPlan.price) {
-    logger.warn({ userId, currentPlan: currentDetails.planType, currentPrice: currentPlan.price, attemptedPlan: planType, attemptedPrice: newPlan.price }, 'User attempted upgrade but new plan is not higher tier');
-    throw new ValidationError(`Cannot upgrade from ${currentPlan.name} ($${currentPlan.price}) to ${newPlan.name} ($${newPlan.price}). Use downgrade endpoint for lower tiers or stay on current plan.`);
+  if (newTier <= currentTier) {
+    throw new ValidationError(`Cannot upgrade from ${currentDetails!.planType} to ${planType}. Use downgrade endpoint for lower tiers.`);
   }
 
-  logger.info({ userId, fromPlan: currentDetails.planType, toPlan: planType, fromPrice: currentPlan.price, toPrice: newPlan.price }, 'Processing plan upgrade');
+  // Same plan check
+  if (currentDetails!.planType === planType) {
+    throw new ValidationError(`You are already on the ${planType} plan.`);
+  }
+
+  // Cancel any scheduled downgrade before upgrading
+  try {
+    await cancelScheduledDowngrade(currentDetails!.stripeSubscriptionId!);
+  } catch (error) {
+    // Not a critical error - may not have a schedule
+    logger.debug({ userId, error }, 'No scheduled downgrade to cancel (or error cancelling)');
+  }
 
   const priceId = STRIPE_PRICE_IDS[planType as keyof typeof STRIPE_PRICE_IDS];
+  if (!priceId) throw new ValidationError('Invalid plan type');
 
-  if (!priceId) {
-    throw new ValidationError('Invalid plan type');
-  }
-
+  // Create upgrade - generates prorated invoice
   const subscription = await upgradeSubscription(userId, priceId);
+  const invoice = subscription.latest_invoice as Stripe.Invoice;
 
-  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Subscription upgraded successfully');
+  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Upgrade initiated - awaiting payment');
 
   res.json(apiResponse({
-    id: subscription.id,
+    subscriptionId: subscription.id,
     status: subscription.status,
-    hostedInvoiceUrl: (subscription.latest_invoice as any)?.hosted_invoice_url,
+    hostedInvoiceUrl: invoice?.hosted_invoice_url,
+    amountDue: invoice?.amount_due ? invoice.amount_due / 100 : undefined,
     planType
-  }, 'Subscription upgrade initiated. Please complete payment to activate your new plan.'));
+  }, 'Complete payment to activate your upgrade.'));
 }));
 
 /**
  * POST /api/subscriptions/downgrade
- * Downgrade to a lower tier plan (takes effect at period end)
- * Body: { planType: 'free' | 'starter' | 'growth' }
+ * Downgrade to a lower tier plan (takes effect at period end via Stripe schedule)
+ * Database updated by webhook when schedule executes
  */
 router.post('/downgrade', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
   const { planType } = req.body;
 
-  if (!planType || !['starter', 'growth'].includes(planType)) {
-    throw new ValidationError('Valid planType required (starter or growth)');
+  // Allow downgrade to starter, growth, or cancel to free
+  if (!planType || !['free', 'starter', 'growth'].includes(planType)) {
+    throw new ValidationError('Valid planType required (free, starter, or growth)');
   }
 
   logger.info({ userId, planType }, 'Downgrading subscription');
 
-  // Check if user has a subscription
+  // Check current state
   const currentDetails = await getSubscriptionDetails(userId);
-  if (!currentDetails || !currentDetails.stripeSubscriptionId) {
-    logger.warn({ userId, attemptedPlan: planType }, 'User attempted to downgrade but has no active subscription');
-    throw new ValidationError('You do not have an active subscription to downgrade.');
-  }
+  validateSubscriptionState(currentDetails, 'downgrade');
 
   // Validate it's actually a downgrade (lower tier)
-  const currentPlan = getPlan(currentDetails.planType as PlanType);
-  const newPlan = getPlan(planType as PlanType);
+  const currentTier = PLAN_TIERS[currentDetails!.planType] || 0;
+  const newTier = PLAN_TIERS[planType] || 0;
   
-  if (newPlan.price >= currentPlan.price) {
-    logger.warn({ userId, currentPlan: currentDetails.planType, currentPrice: currentPlan.price, attemptedPlan: planType, attemptedPrice: newPlan.price }, 'User attempted downgrade but new plan is not lower tier');
-    throw new ValidationError(`Cannot downgrade from ${currentPlan.name} ($${currentPlan.price}) to ${newPlan.name} ($${newPlan.price}). Use upgrade endpoint for higher tiers or stay on current plan.`);
+  if (newTier >= currentTier) {
+    throw new ValidationError(`Cannot downgrade from ${currentDetails!.planType} to ${planType}. Use upgrade endpoint for higher tiers.`);
   }
 
-  logger.info({ userId, fromPlan: currentDetails.planType, toPlan: planType, fromPrice: currentPlan.price, toPrice: newPlan.price, effectiveAtPeriodEnd: true }, 'Processing plan downgrade');
+  // Same plan check
+  if (currentDetails!.planType === planType) {
+    throw new ValidationError(`You are already on the ${planType} plan.`);
+  }
+
+  // Handle downgrade to free (cancellation)
+  if (planType === 'free') {
+    const subscription = await cancelSubscription(currentDetails!.stripeSubscriptionId!, false);
+    logger.info({ userId, subscriptionId: subscription.id }, 'Subscription set to cancel at period end (downgrade to free)');
+    const periodEnd = subscription.items.data[0]?.current_period_end;
+    return res.json(apiResponse({
+      subscriptionId: subscription.id,
+      status: subscription.status,
+      scheduledPlan: 'free',
+      cancelAtPeriodEnd: true,
+      effectiveDate: periodEnd ? new Date(periodEnd * 1000).toISOString() : null
+    }, 'Your subscription will be canceled at the end of your billing period.'));
+  }
 
   const priceId = STRIPE_PRICE_IDS[planType as keyof typeof STRIPE_PRICE_IDS];
+  if (!priceId) throw new ValidationError('Invalid plan type');
 
-  if (!priceId) {
-    throw new ValidationError('Invalid plan type');
-  }
-
+  // Create subscription schedule for period-end change
   const subscription = await downgradeSubscription(userId, priceId);
+  const periodEnd = (subscription as any).current_period_end;
 
-  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Subscription downgrade scheduled');
+  logger.info({ userId, planType, subscriptionId: subscription.id }, 'Downgrade scheduled');
 
   res.json(apiResponse({
-    id: subscription.id,
+    subscriptionId: subscription.id,
     status: subscription.status,
-    planType
-  }, 'Subscription will be downgraded at the end of your current billing period.'));
+    scheduledPlan: planType,
+    effectiveDate: periodEnd ? new Date(periodEnd * 1000).toISOString() : null
+  }, 'Your plan will be downgraded at the end of your current billing period.'));
 }));
 
 /**
  * POST /api/subscriptions/cancel
- * Cancel subscription (takes effect at period end by default)
- * Body: { immediately?: boolean }
+ * Cancel subscription (at period end by default, or immediately)
+ * Database updated by webhook when subscription deleted
  */
 router.post('/cancel', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -427,36 +321,24 @@ router.post('/cancel', catchAsync(async (req: AuthRequest, res) => {
   logger.info({ userId, immediately }, 'Canceling subscription');
 
   const details = await getSubscriptionDetails(userId);
+  validateSubscriptionState(details, 'cancel');
 
-  if (!details) {
-    throw new NotFoundError('Subscription details not found');
-  }
+  const subscription = await cancelSubscription(details!.stripeSubscriptionId!, immediately);
 
-  if (!details.stripeSubscriptionId) {
-    logger.warn({ userId, currentPlan: details?.planType }, 'User attempted to cancel but has no active subscription');
-    throw new ValidationError('No active subscription to cancel');
-  }
-
-  logger.info({ userId, currentPlan: details.planType, subscriptionId: details.stripeSubscriptionId, immediately, willLoseAccessAt: immediately ? 'now' : details.currentPeriodEnd }, 'Processing subscription cancellation');
-
-  const subscription = await cancelSubscription(details.stripeSubscriptionId, immediately);
-
-  logger.info({ userId, subscriptionId: subscription.id, immediately, cancelAtPeriodEnd: subscription.cancel_at_period_end }, 'Subscription canceled');
-
-  const message = immediately 
-    ? 'Subscription canceled immediately.' 
-    : 'Subscription will be canceled at the end of your current billing period.';
+  logger.info({ userId, subscriptionId: subscription.id, immediately }, 'Subscription canceled');
 
   res.json(apiResponse({
-    id: subscription.id,
+    subscriptionId: subscription.id,
     status: subscription.status,
-    cancelAtPeriodEnd: subscription.cancel_at_period_end
-  }, message));
+    cancelAtPeriodEnd: subscription.cancel_at_period_end,
+    cancelAt: subscription.cancel_at ? new Date(subscription.cancel_at * 1000).toISOString() : null
+  }, immediately ? 'Subscription canceled immediately.' : 'Subscription will cancel at the end of your billing period.'));
 }));
 
 /**
  * POST /api/subscriptions/reactivate
- * Reactivate a canceled subscription (only works if cancel_at_period_end is true)
+ * Reactivate a subscription scheduled for cancellation
+ * Only works if cancel_at_period_end is true
  */
 router.post('/reactivate', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -464,36 +346,22 @@ router.post('/reactivate', catchAsync(async (req: AuthRequest, res) => {
   logger.info({ userId }, 'Reactivating subscription');
 
   const details = await getSubscriptionDetails(userId);
+  validateSubscriptionState(details, 'reactivate');
 
-  if (!details) {
-    throw new NotFoundError('Subscription details not found');
-  }
-
-  if (!details.stripeSubscriptionId) {
-    logger.warn({ userId, currentPlan: details?.planType }, 'User attempted to reactivate but has no subscription');
-    throw new ValidationError('No subscription to reactivate');
-  }
-
-  if (!details.cancelAtPeriodEnd) {
-    logger.warn({ userId, currentPlan: details.planType, subscriptionId: details.stripeSubscriptionId }, 'User attempted to reactivate but subscription is not scheduled for cancellation');
-    throw new ValidationError('Subscription is not scheduled for cancellation');
-  }
-
-  const subscription = await reactivateSubscription(details.stripeSubscriptionId);
+  const subscription = await reactivateSubscription(details!.stripeSubscriptionId!);
 
   logger.info({ userId, subscriptionId: subscription.id }, 'Subscription reactivated');
 
   res.json(apiResponse({
-    id: subscription.id,
+    subscriptionId: subscription.id,
     status: subscription.status,
     cancelAtPeriodEnd: subscription.cancel_at_period_end
-  }, 'Subscription reactivated successfully. Your subscription will continue.'));
+  }, 'Subscription reactivated successfully.'));
 }));
 
 /**
  * GET /api/subscriptions/portal
  * Get Stripe Customer Portal URL for managing billing
- * Query: ?returnUrl=<url>
  */
 router.get('/portal', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
@@ -502,73 +370,43 @@ router.get('/portal', catchAsync(async (req: AuthRequest, res) => {
   logger.info({ userId }, 'Generating customer portal URL');
 
   const details = await getSubscriptionDetails(userId);
-
-  if (!details) {
-    throw new NotFoundError('Subscription details not found');
-  }
-
-  if (!details.stripeCustomerId) {
-    logger.warn({ userId, currentPlan: details?.planType }, 'User attempted to access portal but has no Stripe customer');
+  if (!details?.stripeCustomerId) {
     throw new ValidationError('No Stripe customer found');
   }
 
   const portalUrl = await getCustomerPortalUrl(details.stripeCustomerId, returnUrl);
 
-  logger.info({ userId, customerId: details.stripeCustomerId }, 'Customer portal URL generated');
-
   res.json(apiResponse({ url: portalUrl }));
 }));
 
 /**
- * POST /api/subscriptions/cancel-incomplete
- * Cancel a subscription stuck in incomplete status
+ * DELETE /api/subscriptions/incomplete
+ * Cancel an incomplete or past_due subscription
+ * Used when user abandons checkout or payment fails
+ * Webhook will handle the database cleanup when subscription deleted
  */
-router.post('/cancel-incomplete', catchAsync(async (req: AuthRequest, res) => {
+router.delete('/incomplete', catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
 
   logger.info({ userId }, 'Canceling incomplete subscription');
 
-  const currentDetails = await getSubscriptionDetails(userId);
-
-  if (!currentDetails || !currentDetails.stripeSubscriptionId) {
-    throw new NotFoundError('No subscription found to cancel');
+  const details = await getSubscriptionDetails(userId);
+  if (!details?.stripeSubscriptionId) {
+    throw new ValidationError('No subscription found');
   }
 
-  if (currentDetails.subscriptionStatus !== 'incomplete' && currentDetails.subscriptionStatus !== 'incomplete_expired') {
-    throw new ValidationError(`Cannot cancel subscription with status: ${currentDetails.subscriptionStatus}. This endpoint is only for incomplete subscriptions.`);
+  // Only allow canceling incomplete/past_due subscriptions
+  const cancelableStatuses = ['incomplete', 'incomplete_expired', 'past_due', 'unpaid'];
+  if (!cancelableStatuses.includes(details.subscriptionStatus || '')) {
+    throw new ValidationError(`Cannot cancel subscription with status: ${details.subscriptionStatus}. Use the cancel endpoint instead.`);
   }
 
-  // Cancel the incomplete subscription
-  await cancelSubscription(currentDetails.stripeSubscriptionId, true);
+  // Cancel immediately in Stripe - webhook will handle DB cleanup
+  await cancelIncompleteSubscription(details.stripeSubscriptionId);
 
-  // Reset user to free plan
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      planType: 'free',
-      unitLimit: 3,
-      subscriptionStatus: null,
-      stripeSubscriptionId: null,
-      currentPeriodStart: null,
-      currentPeriodEnd: null,
-      cancelAtPeriodEnd: false,
-    }
-  });
+  logger.info({ userId, subscriptionId: details.stripeSubscriptionId }, 'Incomplete subscription canceled');
 
-  // Log to history
-  await prisma.subscriptionHistory.create({
-    data: {
-      userId: userId,
-      eventType: 'incomplete_cancelled',
-      fromPlan: currentDetails.planType,
-      toPlan: 'free',
-      stripeObjectId: currentDetails.stripeSubscriptionId,
-    }
-  });
-
-  logger.info({ userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Incomplete subscription cancelled, user reset to free plan');
-
-  res.json(apiResponse(null, 'Incomplete subscription cancelled. You are now on the free plan.'));
+  res.json(apiResponse(null, 'Subscription canceled.'));
 }));
 
 export default router;

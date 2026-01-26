@@ -4,6 +4,25 @@ import { getPlan, getRecommendedPlan } from '../config/plans.js';
 import { PlanType } from '../config/stripe.js';
 
 /**
+ * Type representing subscription details returned by getSubscriptionDetails
+ */
+export interface SubscriptionDetails {
+  planType: string;
+  planName: string;
+  price: number;
+  unitLimit: number;
+  currentUnitCount: number;
+  unitsRemaining: number;
+  subscriptionStatus: string | null;
+  isActive: boolean;
+  isInGracePeriod: boolean;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+}
+
+/**
  * Check if a user's subscription is currently active
  */
 export function isSubscriptionActive(user: User): boolean {
@@ -142,7 +161,7 @@ export async function shouldUpgrade(userId: string): Promise<{ shouldUpgrade: bo
 /**
  * Get subscription details for a user in a formatted way
  */
-export async function getSubscriptionDetails(userId: string) {
+export async function getSubscriptionDetails(userId: string): Promise<SubscriptionDetails | null> {
   const user = await prisma.user.findUnique({
     where: { id: userId }
   });

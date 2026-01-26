@@ -251,6 +251,21 @@ class StripeService {
   }
 
   /**
+   * Get subscription by ID
+   */
+  async getSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+    try {
+      const subscription = await getStripeClient().subscriptions.retrieve(subscriptionId);
+      return subscription;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Detach payment method from customer
    */
   async detachPaymentMethod(paymentMethodId: string): Promise<Stripe.PaymentMethod> {
