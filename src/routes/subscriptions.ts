@@ -95,6 +95,16 @@ function validateSubscriptionState(
 router.use(authenticate);
 
 /**
+ * GET /api/subscriptions/plans
+ * Get all available subscription plans
+ */
+router.get('/plans', catchAsync(async (req: AuthRequest, res) => {
+  const { getAllPlans } = await import('../config/plans.js');
+  const plans = getAllPlans();
+  res.json(apiResponse(plans));
+}));
+
+/**
  * GET /api/subscriptions/current
  * Get current subscription details from DATABASE only (no Stripe calls)
  * Database is the source of truth for what user has PAID for
@@ -105,7 +115,7 @@ router.get('/current', catchAsync(async (req: AuthRequest, res) => {
   logger.info({ userId }, 'Fetching current subscription details');
 
   const details = await getSubscriptionDetails(userId);
-  
+
   // Add enforcement state
   const enforcementState = await subscriptionEnforcementService.getEnforcementState(userId);
 
@@ -146,11 +156,11 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
   // Get current state and clean up any incomplete subscriptions
   let currentDetails = await getSubscriptionDetails(userId);
-  
-  if (currentDetails?.stripeSubscriptionId && 
-      ['incomplete', 'incomplete_expired'].includes(currentDetails.subscriptionStatus || '')) {
+
+  if (currentDetails?.stripeSubscriptionId &&
+    ['incomplete', 'incomplete_expired'].includes(currentDetails.subscriptionStatus || '')) {
     logger.info({ userId, oldSubscriptionId: currentDetails.stripeSubscriptionId }, 'Cleaning up incomplete subscription');
-    
+
     try {
       await cancelIncompleteSubscription(currentDetails.stripeSubscriptionId);
       // Clear local state immediately so validation passes
@@ -165,7 +175,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
       // Continue anyway - Stripe will handle duplicate subscription logic
     }
   }
-  
+
   // Validate subscription state
   validateSubscriptionState(currentDetails, 'create');
 
@@ -209,7 +219,7 @@ router.post('/upgrade', catchAsync(async (req: AuthRequest, res) => {
   // Validate it's actually an upgrade (higher tier)
   const currentTier = PLAN_TIERS[currentDetails!.planType] || 0;
   const newTier = PLAN_TIERS[planType] || 0;
-  
+
   if (newTier <= currentTier) {
     throw new ValidationError(`Cannot upgrade from ${currentDetails!.planType} to ${planType}. Use downgrade endpoint for lower tiers.`);
   }
@@ -268,7 +278,7 @@ router.post('/downgrade', catchAsync(async (req: AuthRequest, res) => {
   // Validate it's actually a downgrade (lower tier)
   const currentTier = PLAN_TIERS[currentDetails!.planType] || 0;
   const newTier = PLAN_TIERS[planType] || 0;
-  
+
   if (newTier >= currentTier) {
     throw new ValidationError(`Cannot downgrade from ${currentDetails!.planType} to ${planType}. Use upgrade endpoint for higher tiers.`);
   }

@@ -42,90 +42,17 @@ export const PLANS: Record<PlanType, PlanConfig> = {
     price: 0,
     stripePriceId: null,
     features: [
-      'Automated Rent Collection',
-      'Real-Time Dashboard',
-      'Email Reminders',
-      'Secure Card Payments',
-      'Community Support',
+      'Up to 3 Units',
+      'Online Rent Collection',
+      'Autopay & Reminders',
+      'Financial Reporting',
+      'Unlimited Properties',
     ],
     limits: {
       units: 3,
-      properties: -1, // Unlimited properties
-      users: 1,
+      properties: -1,
+      users: -1, // Unlocked
       supportLevel: 'community',
-      features: {
-        autopay: false,
-        manualPayments: true,
-        emailReminders: true,
-        smsReminders: false,
-        dataExport: false,
-        advancedReporting: false,
-        customReminderTemplates: false,
-        brandedInvites: false,
-        apiAccess: false,
-        whiteLabel: false,
-      },
-      rateLimit: {
-        emailsPerMonth: 1000,
-        smsPerMonth: 0,
-      },
-    },
-  },
-  
-  starter: {
-    id: 'starter',
-    name: 'Starter',
-    price: 29,
-    stripePriceId: STRIPE_PRICE_IDS.starter,
-    features: [
-      'Everything in Free',
-      'Autopay',
-      'SMS Reminders',
-      'Priority Support',
-      'Payment History Export',
-      'Advanced Reporting',
-    ],
-    limits: {
-      units: 10,
-      properties: -1,
-      users: 1,
-      supportLevel: 'priority',
-      features: {
-        autopay: true,
-        manualPayments: true,
-        emailReminders: true,
-        smsReminders: true,
-        dataExport: true,
-        advancedReporting: true,
-        customReminderTemplates: false,
-        brandedInvites: false,
-        apiAccess: false,
-        whiteLabel: false,
-      },
-      rateLimit: {
-        emailsPerMonth: 5000,
-        smsPerMonth: 500,
-      },
-    },
-  },
-  
-  growth: {
-    id: 'growth',
-    name: 'Growth',
-    price: 79,
-    stripePriceId: STRIPE_PRICE_IDS.growth,
-    features: [
-      'Everything in Starter',
-      'Multi-User Access',
-      'Branded Tenant Invites',
-      'Custom Reminders',
-      'Dedicated Support',
-    ],
-    limits: {
-      units: 50,
-      properties: -1,
-      users: 5,
-      supportLevel: 'dedicated',
       features: {
         autopay: true,
         manualPayments: true,
@@ -135,32 +62,66 @@ export const PLANS: Record<PlanType, PlanConfig> = {
         advancedReporting: true,
         customReminderTemplates: true,
         brandedInvites: true,
-        apiAccess: false,
-        whiteLabel: false,
+        apiAccess: true,
+        whiteLabel: true,
       },
       rateLimit: {
-        emailsPerMonth: 20000,
-        smsPerMonth: 2000,
+        emailsPerMonth: 1000,
+        smsPerMonth: 100,
       },
     },
   },
-  
-  professional: {
-    id: 'professional',
-    name: 'Professional',
-    price: 149,
-    stripePriceId: STRIPE_PRICE_IDS.professional,
+
+  starter: {
+    id: 'starter',
+    name: 'Starter',
+    price: 29,
+    stripePriceId: STRIPE_PRICE_IDS.starter,
     features: [
-      'Everything in Growth',
-      'White-Label Options',
-      'API Access',
-      'Custom Integrations',
-      'Account Manager',
+      'Up to 20 Units',
+      'Everything in Free',
+      'Priority Support',
+      'Increased Rate Limits',
     ],
     limits: {
-      units: 100,
+      units: 20,
       properties: -1,
-      users: -1, // Unlimited
+      users: -1,
+      supportLevel: 'priority',
+      features: {
+        autopay: true,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: true,
+        dataExport: true,
+        advancedReporting: true,
+        customReminderTemplates: true,
+        brandedInvites: true,
+        apiAccess: true,
+        whiteLabel: true,
+      },
+      rateLimit: {
+        emailsPerMonth: 5000,
+        smsPerMonth: 500,
+      },
+    },
+  },
+
+  growth: {
+    id: 'growth',
+    name: 'Growth',
+    price: 79,
+    stripePriceId: STRIPE_PRICE_IDS.growth,
+    features: [
+      'Up to 50 Units',
+      'Everything in Starter',
+      'Dedicated Support',
+      'High Volume Limits',
+    ],
+    limits: {
+      units: 50,
+      properties: -1,
+      users: -1,
       supportLevel: 'dedicated',
       features: {
         autopay: true,
@@ -175,8 +136,43 @@ export const PLANS: Record<PlanType, PlanConfig> = {
         whiteLabel: true,
       },
       rateLimit: {
-        emailsPerMonth: -1, // Unlimited
-        smsPerMonth: -1, // Unlimited
+        emailsPerMonth: 20000,
+        smsPerMonth: 2000,
+      },
+    },
+  },
+
+  professional: {
+    id: 'professional',
+    name: 'Professional',
+    price: 149,
+    stripePriceId: STRIPE_PRICE_IDS.professional,
+    features: [
+      'Up to 100 Units',
+      'Everything in Growth',
+      'White-Glove Migration',
+      'Unlimited Volume',
+    ],
+    limits: {
+      units: 100,
+      properties: -1,
+      users: -1,
+      supportLevel: 'dedicated',
+      features: {
+        autopay: true,
+        manualPayments: true,
+        emailReminders: true,
+        smsReminders: true,
+        dataExport: true,
+        advancedReporting: true,
+        customReminderTemplates: true,
+        brandedInvites: true,
+        apiAccess: true,
+        whiteLabel: true,
+      },
+      rateLimit: {
+        emailsPerMonth: -1,
+        smsPerMonth: -1,
       },
     },
   },
@@ -218,12 +214,12 @@ export function getRecommendedPlan(unitCount: number): PlanType {
  */
 export function canUpgradeToPlan(currentPlan: PlanType, targetPlan: PlanType, currentUnitCount: number): boolean {
   const target = getPlan(targetPlan);
-  
+
   // Check if target plan can accommodate current units
   if (currentUnitCount > target.limits.units) {
     return false;
   }
-  
+
   return true;
 }
 
@@ -232,20 +228,20 @@ export function canUpgradeToPlan(currentPlan: PlanType, targetPlan: PlanType, cu
  */
 export function canDowngradeToPlan(currentPlan: PlanType, targetPlan: PlanType, currentUnitCount: number): boolean {
   const target = getPlan(targetPlan);
-  
+
   // Check if target plan can accommodate current units
   if (currentUnitCount > target.limits.units) {
     return false;
   }
-  
+
   // Can't "downgrade" to a higher tier
   const currentPrice = getPlan(currentPlan).price;
   const targetPrice = target.price;
-  
+
   if (targetPrice >= currentPrice) {
     return false;
   }
-  
+
   return true;
 }
 
