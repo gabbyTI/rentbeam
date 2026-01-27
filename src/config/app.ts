@@ -4,11 +4,11 @@
  */
 export const APP_CONFIG = {
   name: 'RentBeam',
-  domain: 'rentbeam.app',
-  url: 'https://rentbeam.app',
+  domain: 'rentbeam.ca',
+  url: 'https://rentbeam.ca',
   email: {
-    noreply: 'noreply@rentbeam.app',
-    support: 'support@rentbeam.app',
+    noreply: 'noreply@rentbeam.ca',
+    support: 'support@rentbeam.ca',
   },
   metrics: {
     appLabel: 'rentbeam-api',
