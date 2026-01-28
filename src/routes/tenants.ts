@@ -29,7 +29,7 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
   // Parse pagination and sort
   const { page, limit, skip } = parsePagination(req.query);
   const { orderBy: rawOrderBy } = parseSort(req.query, '-createdAt');
-  
+
   // Validate and filter orderBy fields
   const allowedFields = ['createdAt', 'updatedAt', 'moveInDate'];
   const orderBy = rawOrderBy.filter(order => {
@@ -66,10 +66,10 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/tenants (create tenant + send invite)
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { email, name, phone, unitId, moveInDate } = req.body;
+  const { email, firstName, lastName, phone, unitId, moveInDate } = req.body;
 
-  if (!email || !name || !unitId) {
-    throw new ValidationError('Missing required fields');
+  if (!email || !firstName || !lastName || !unitId) {
+    throw new ValidationError('Missing required fields: email, firstName, lastName, and unitId are required');
   }
 
   const landlord = await prisma.landlordAccount.findUnique({
@@ -137,7 +137,13 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // If user doesn't exist, create placeholder
   if (!tenantUser) {
     tenantUser = await prisma.user.create({
-      data: { email, name, phone }
+      data: {
+        email,
+        firstName,
+        lastName,
+        name: `${firstName} ${lastName}`,
+        phone
+      }
     });
   }
 
@@ -171,11 +177,11 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     // Don't fail the request if email fails - tenant is still created
   }
 
-  logger.info({ 
-    tenantId: membership.id, 
-    email, 
-    unitId, 
-    landlordId: landlord.id 
+  logger.info({
+    tenantId: membership.id,
+    email,
+    unitId,
+    landlordId: landlord.id
   }, 'Tenant created and invite sent');
 
   // Record metrics
@@ -226,7 +232,7 @@ router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
 
   // Generate new invite token
   const inviteToken = crypto.randomBytes(32).toString('hex');
-  
+
   await prisma.tenantMembership.update({
     where: { id },
     data: { inviteToken }
@@ -353,18 +359,18 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
       // Don't fail the move-out if Cognito deletion fails
     }
   } else {
-    logger.info({ 
-      email: membership.user.email, 
-      otherMemberships, 
-      hasLandlordAccount: !!landlordAccount 
+    logger.info({
+      email: membership.user.email,
+      otherMemberships,
+      hasLandlordAccount: !!landlordAccount
     }, 'Skipped Cognito deletion - user has other active accounts');
   }
 
-  logger.info({ 
-    tenantId: id, 
-    email: membership.user.email, 
+  logger.info({
+    tenantId: id,
+    email: membership.user.email,
     moveOutDate: parsedMoveOutDate,
-    hasOutstandingBalance 
+    hasOutstandingBalance
   }, 'Tenant moved out');
 
   // Update tenant metrics
@@ -426,11 +432,11 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
 router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { id } = req.params;
-  const { name, phone } = req.body;
+  const { firstName, lastName, phone } = req.body;
 
   // Validate at least one field is provided
-  if (!name && phone === undefined) {
-    throw new ValidationError('At least one field (name or phone) must be provided');
+  if (!firstName && !lastName && phone === undefined) {
+    throw new ValidationError('At least one field (firstName, lastName, or phone) must be provided');
   }
 
   // Fetch tenant membership
@@ -458,7 +464,16 @@ router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
   // Note: Login email (user.email) cannot be changed as it's tied to Cognito username
   // notificationEmail can only be changed by the tenant themselves (with verification)
   const updateData: any = {};
-  if (name) updateData.name = name;
+
+  // Get current values for computing name
+  const currentFirstName = firstName || membership.user.firstName;
+  const currentLastName = lastName || membership.user.lastName;
+
+  if (firstName) updateData.firstName = firstName;
+  if (lastName) updateData.lastName = lastName;
+  if (firstName || lastName) {
+    updateData.name = `${currentFirstName} ${currentLastName}`;
+  }
   if (phone !== undefined) updateData.phone = phone || null; // Allow clearing phone
 
   const updatedUser = await prisma.user.update({
@@ -466,8 +481,8 @@ router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
     data: updateData
   });
 
-  logger.info({ 
-    tenantMembershipId: id, 
+  logger.info({
+    tenantMembershipId: id,
     userId: membership.userId,
     landlordId: landlord.id,
     updatedFields: Object.keys(updateData)
@@ -628,10 +643,10 @@ router.patch('/:id/autopay', catchAsync(async (req: AuthRequest, res) => {
     }
   });
 
-  logger.info({ 
-    tenantMembershipId: id, 
+  logger.info({
+    tenantMembershipId: id,
     autopayEnabled,
-    userId: user.id 
+    userId: user.id
   }, `Autopay ${autopayEnabled ? 'enabled' : 'disabled'}`);
 
   // Update autopay metrics
