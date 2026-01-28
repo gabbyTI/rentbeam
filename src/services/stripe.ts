@@ -250,6 +250,8 @@ class StripeService {
     currency?: string;
     customerId: string;
     paymentMethodId: string;
+    connectedAccountId: string; // Landlord's Stripe Connect account ID
+    applicationFeeAmount?: number; // Optional platform fee in cents
     metadata?: Record<string, string>;
     confirm?: boolean;
     offSession?: boolean;
@@ -263,6 +265,12 @@ class StripeService {
         off_session: params.offSession !== undefined ? params.offSession : true,
         confirm: params.confirm !== undefined ? params.confirm : true,
         metadata: params.metadata || {},
+        // Route payment to landlord's connected account
+        transfer_data: {
+          destination: params.connectedAccountId,
+        },
+        // Optional platform fee (if specified)
+        ...(params.applicationFeeAmount ? { application_fee_amount: params.applicationFeeAmount } : {}),
       });
       return paymentIntent;
     } catch (error) {

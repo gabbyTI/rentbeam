@@ -105,6 +105,17 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           // Convert to cents for Stripe
           const amountInCents = Math.round(totalAmount * 100);
 
+          // Check if landlord has Stripe account
+          const landlordStripeAccountId = tenant.unit.property.landlord.stripeAccountId;
+          if (!landlordStripeAccountId) {
+            logger.warn(
+              { tenantMembershipId: tenant.id, landlordId: tenant.unit.property.landlord.id },
+              'Landlord has not completed payment setup, skipping'
+            );
+            result.skipped++;
+            continue;
+          }
+
           logger.info(
             {
               tenantMembershipId: tenant.id,
@@ -122,6 +133,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             currency: 'usd',
             customerId: tenant.stripeCustomerId,
             paymentMethodId: tenant.defaultPaymentMethodId,
+            connectedAccountId: landlordStripeAccountId, // Route to landlord
             metadata: {
               tenantMembershipId: tenant.id,
               month: currentMonth,
@@ -188,7 +200,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           if (error.code === 'card_declined' || error.code === 'insufficient_funds') {
             // Increment failure count
             const currentFailureCount = tenant.autopayFailureCount + 1;
-            
+
             await prisma.tenantMembership.update({
               where: { id: tenant.id },
               data: {
@@ -253,7 +265,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
               { tenantMembershipId: tenant.id },
               'Autopay disabled due to authentication requirement'
             );
-            
+
             // Send email notification
             await emailService.sendAutopayDisabledEmail({
               email: tenant.user.email,

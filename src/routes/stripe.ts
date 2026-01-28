@@ -339,6 +339,15 @@ router.post(
       throw new BadRequestError('Payment method not set up');
     }
 
+    // Get landlord for Stripe account
+    const landlord = await prisma.landlordAccount.findUnique({
+      where: { id: membership.landlordId },
+    });
+
+    if (!landlord || !landlord.stripeAccountId) {
+      throw new BadRequestError('Landlord has not completed payment setup');
+    }
+
     // Calculate fees
     const rentAmount = parseFloat(membership.unit.rentAmount.toString());
     const fees = stripeService.calculateProcessingFee(rentAmount);
@@ -364,6 +373,7 @@ router.post(
       amount: Math.round(fees.totalAmount * 100),
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
+      connectedAccountId: landlord.stripeAccountId, // Route to landlord
       metadata: {
         tenantMembershipId: membership.id,
         month,

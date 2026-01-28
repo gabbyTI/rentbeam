@@ -150,7 +150,7 @@ model Payment {
   month  String // Format: "2025-01"
   note   String?
 
-  stripePaymentIntentId String?
+  stripePaymentIntentId String? @unique
 
   createdAt DateTime @default(now())
 
