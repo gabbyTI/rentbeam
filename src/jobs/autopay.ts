@@ -116,6 +116,10 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             continue;
           }
 
+          // Determine currency based on landlord's country
+          const landlordCountry = tenant.unit.property.landlord.user.country;
+          const currency = landlordCountry === 'CA' ? 'cad' : 'usd';
+
           logger.info(
             {
               tenantMembershipId: tenant.id,
@@ -123,6 +127,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
               processingFee,
               totalAmount,
               amountInCents,
+              currency,
             },
             'Processing autopay charge'
           );
@@ -130,7 +135,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           // Create payment intent with off_session flag
           const paymentIntent = await stripeService.createPaymentIntent({
             amount: amountInCents,
-            currency: 'usd',
+            currency,
             customerId: tenant.stripeCustomerId,
             paymentMethodId: tenant.defaultPaymentMethodId,
             connectedAccountId: landlordStripeAccountId, // Route to landlord

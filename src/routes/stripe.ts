@@ -282,12 +282,34 @@ router.post(
         email: membership.user.email,
         name: membership.user.name,
       });
-      customerId = customer.id;
 
-      await prisma.tenantMembership.update({
-        where: { id: membership.id },
-        data: { stripeCustomerId: customerId },
+      // Optimistic locking: Try to set it ONLY if still null
+      // This prevents race conditions where two requests create different customers
+      const result = await prisma.tenantMembership.updateMany({
+        where: {
+          id: membership.id,
+          stripeCustomerId: null
+        },
+        data: { stripeCustomerId: customer.id },
       });
+
+      if (result.count > 0) {
+        // We won the race - use our new customer
+        customerId = customer.id;
+      } else {
+        // We lost the race - someone else set it. Fetch the winner.
+        const updated = await prisma.tenantMembership.findUnique({
+          where: { id: membership.id }
+        });
+        customerId = updated?.stripeCustomerId || customer.id;
+
+        logger.info({
+          userId,
+          tenantId: membership.id,
+          existingCustomerId: customerId,
+          orphanedCustomerId: customer.id
+        }, 'Race condition detected: Used existing Stripe customer instead of new one');
+      }
     }
 
     // Create SetupIntent
@@ -339,14 +361,20 @@ router.post(
       throw new BadRequestError('Payment method not set up');
     }
 
-    // Get landlord for Stripe account
+    // Get landlord for Stripe account and country
     const landlord = await prisma.landlordAccount.findUnique({
       where: { id: membership.landlordId },
+      include: {
+        user: true // Get user to check country
+      }
     });
 
     if (!landlord || !landlord.stripeAccountId) {
       throw new BadRequestError('Landlord has not completed payment setup');
     }
+
+    // Determine currency based on landlord's country
+    const currency = landlord.user.country === 'CA' ? 'cad' : 'usd';
 
     // Calculate fees
     const rentAmount = parseFloat(membership.unit.rentAmount.toString());
@@ -371,6 +399,7 @@ router.post(
     // Create PaymentIntent (convert dollars to cents)
     const paymentIntent = await stripeService.createPaymentIntent({
       amount: Math.round(fees.totalAmount * 100),
+      currency,
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
       connectedAccountId: landlord.stripeAccountId, // Route to landlord

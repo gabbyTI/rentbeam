@@ -73,7 +73,8 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   }
 
   const landlord = await prisma.landlordAccount.findUnique({
-    where: { userId: user.id }
+    where: { userId: user.id },
+    include: { user: true }
   });
 
   if (!landlord) {
@@ -187,6 +188,49 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Record metrics
   invitesTotal.inc({ status: 'sent' });
   await updateTenantMetrics(prisma);
+
+  // Initial Payment (Assumed Paid): Create a manual payment record for the move-in month
+  const moveInMonth = `${parsedMoveInDate.getFullYear()}-${String(parsedMoveInDate.getMonth() + 1).padStart(2, '0')}`;
+
+  // Determine currency based on landlord's country
+  const currency = landlord.user?.country === 'CA' ? 'cad' : 'usd';
+  const rentAmount = Number(unit.rentAmount);
+
+  // Check if payment already exists (unlikely for new tenant, but safe)
+  const existingInitialPayment = await prisma.payment.findFirst({
+    where: {
+      tenantMembershipId: membership.id,
+      month: moveInMonth
+    }
+  });
+
+  if (!existingInitialPayment) {
+    // Set payment date to the due date of the move-in month (not current date)
+    // This prevents the payment from being marked as "Late"
+    const paymentDate = new Date(parsedMoveInDate.getFullYear(), parsedMoveInDate.getMonth(), unit.dueDay);
+
+    await prisma.payment.create({
+      data: {
+        tenantMembershipId: membership.id,
+        month: moveInMonth,
+        rentAmount,
+        processingFee: 0,
+        totalAmount: rentAmount,
+        amount: rentAmount, // Legacy field
+        status: 'SUCCEEDED',
+        date: paymentDate,
+        method: 'MANUAL',
+        stripePaymentIntentId: `manual-init-${membership.id}-${Date.now()}`, // Fake ID for uniqueness
+        note: 'Initial rent (assumed paid upon invite)'
+      }
+    });
+
+    logger.info({
+      tenantId: membership.id,
+      month: moveInMonth,
+      amount: rentAmount
+    }, 'Created initial manual payment for new tenant');
+  }
 
 
   res.status(201).json(apiResponse({
@@ -353,6 +397,11 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
   if (otherMemberships === 0 && !landlordAccount && membership.user.cognitoId) {
     try {
       await cognitoService.deleteUser(membership.user.email);
+      // Clear cognitoId to prevent stale reference on re-invite
+      await prisma.user.update({
+        where: { id: membership.userId },
+        data: { cognitoId: null }
+      });
       logger.info({ email: membership.user.email, cognitoId: membership.user.cognitoId }, 'Deleted Cognito user on move-out');
     } catch (error) {
       logger.error({ error, email: membership.user.email }, 'Failed to delete Cognito user on move-out');
