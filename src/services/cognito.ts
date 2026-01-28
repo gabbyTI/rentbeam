@@ -15,6 +15,7 @@ import {
   AdminUpdateUserAttributesCommand,
   GetUserAttributeVerificationCodeCommand,
   VerifyUserAttributeCommand,
+  AdminGetUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider';
 import { createHmac } from 'crypto';
 
@@ -177,7 +178,7 @@ export const cognitoService = {
         Username: email,
         MessageAction: 'SUPPRESS',
       });
-      
+
       // This will throw if user doesn't exist
       // But we don't actually want to create, just check
       // In reality, use AdminGetUser command
@@ -235,13 +236,13 @@ export const cognitoService = {
     });
 
     await client.send(updateCommand);
-    
+
     // Step 2: Request verification code to be sent to new email
     const verifyCommand = new GetUserAttributeVerificationCodeCommand({
       AccessToken: accessToken,
       AttributeName: 'email',
     });
-    
+
     await client.send(verifyCommand);
   },
 
@@ -268,5 +269,24 @@ export const cognitoService = {
     });
 
     await client.send(command);
-  }
+  },
+
+  // Get user's cognitoId (sub) by email
+  async getUserByEmail(email: string): Promise<string | null> {
+    try {
+      const command = new AdminGetUserCommand({
+        UserPoolId: USER_POOL_ID,
+        Username: email,
+      });
+
+      const result = await client.send(command);
+      const sub = result.UserAttributes?.find(attr => attr.Name === 'sub')?.Value;
+      return sub || null;
+    } catch (error: any) {
+      if (error.name === 'UserNotFoundException') {
+        return null;
+      }
+      throw error;
+    }
+  },
 };

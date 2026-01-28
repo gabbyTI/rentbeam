@@ -105,12 +105,30 @@ router.post('/:token/accept', catchAsync(async (req, res) => {
       note: 'You can now login with your existing credentials'
     }, 'Invite accepted successfully'));
   } else {
-    // Create Cognito account with pre-verified email (tenant proved ownership via invite link)
-    const cognitoId = await cognitoService.createTenantUser(
-      user.email,
-      password,
-      user.name
-    );
+    // Try to create Cognito account with pre-verified email
+    let cognitoId: string;
+
+    try {
+      cognitoId = await cognitoService.createTenantUser(
+        user.email,
+        password,
+        user.name
+      );
+    } catch (error: any) {
+      // Handle case where Cognito user exists (e.g., DB was reset)
+      if (error.name === 'UsernameExistsException') {
+        logger.info({ email: user.email }, 'Cognito user already exists, looking up existing user');
+
+        // Look up the existing Cognito user
+        const existingCognitoUser = await cognitoService.getUserByEmail(user.email);
+        if (!existingCognitoUser) {
+          throw new ValidationError('User account exists but could not be retrieved. Please contact support.');
+        }
+        cognitoId = existingCognitoUser;
+      } else {
+        throw error;
+      }
+    }
 
     // Update user and membership
     await prisma.$transaction([
