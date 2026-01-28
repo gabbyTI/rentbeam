@@ -13,11 +13,11 @@ const router = Router();
 
 // POST /api/auth/signup-landlord
 router.post('/signup-landlord', catchAsync(async (req, res) => {
-  const { email, password, name } = req.body;
-  
-  // Validation
-  if (!email || !password || !name) {
-    throw new ValidationError('Email, password, and name are required');
+  const { email, password } = req.body;
+
+  // Validation - only email and password required now
+  if (!email || !password) {
+    throw new ValidationError('Email and password are required');
   }
 
   // Normalize email to lowercase
@@ -33,27 +33,29 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
   }
 
   // Create Cognito user (handle if already exists)
+  // Pass empty name for now - will be set during profile completion
+  const placeholderName = normalizedEmail.split('@')[0];
   let cognitoId: string;
   try {
-    cognitoId = await cognitoService.createUser(normalizedEmail, password, name);
+    cognitoId = await cognitoService.createUser(normalizedEmail, password, placeholderName);
   } catch (error: any) {
     if (error.name === 'UsernameExistsException') {
       // Cognito user exists but database user doesn't - this can happen after DB reset
       // Delete the Cognito user and recreate to ensure consistency
       logger.warn({ email: normalizedEmail }, 'Cognito user exists without database record, deleting and recreating');
       await cognitoService.deleteUser(normalizedEmail);
-      cognitoId = await cognitoService.createUser(normalizedEmail, password, name);
+      cognitoId = await cognitoService.createUser(normalizedEmail, password, placeholderName);
     } else {
       throw error;
     }
   }
 
-  // Create user in database
+  // Create user in database with placeholder name (profile completion required)
   const user = await prisma.user.create({
     data: {
       cognitoId,
       email: normalizedEmail,
-      name,
+      name: placeholderName, // Placeholder until profile is completed
       landlordAccount: {
         create: {}
       }
@@ -70,7 +72,8 @@ router.post('/signup-landlord', catchAsync(async (req, res) => {
       id: user.id,
       email: user.email,
       name: user.name,
-      landlordId: user.landlordAccount?.id
+      landlordId: user.landlordAccount?.id,
+      profileComplete: false, // New user needs to complete profile
     }
   }, 'Landlord account created successfully'));
 }));
@@ -135,6 +138,9 @@ router.post('/login', catchAsync(async (req, res) => {
 
   logger.info({ userId: user.id, email: normalizedEmail }, 'User login successful');
 
+  // Check if profile is complete (has firstName, lastName, and country)
+  const profileComplete = !!(user.firstName && user.lastName && user.country);
+
   res.json(apiResponse({
     tokens: {
       idToken: authResult.IdToken,
@@ -146,6 +152,10 @@ router.post('/login', catchAsync(async (req, res) => {
       id: user.id,
       email: user.email,
       name: user.name,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      country: user.country,
+      profileComplete,
     },
     memberships: {
       landlord: user.landlordAccount ? { id: user.landlordAccount.id } : null,
@@ -267,7 +277,7 @@ router.post('/logout', catchAsync(async (req, res) => {
 // GET /api/auth/me - Get current user profile
 router.get('/me', authenticate, catchAsync(async (req, res) => {
   const authReq = req as AuthRequest;
-  
+
   if (!authReq.user?.cognitoId) {
     throw new UnauthorizedError('User not authenticated');
   }
@@ -293,22 +303,30 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
     throw new NotFoundError('User not found');
   }
 
+  // Check if profile is complete (has firstName, lastName, and country)
+  const profileComplete = !!(user.firstName && user.lastName && user.country);
+
   res.json(apiResponse({
     user: {
       id: user.id,
       email: user.email,
       notificationEmail: user.notificationEmail,
       name: user.name,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      country: user.country,
       phone: user.phone,
       businessName: user.businessName,
       taxId: user.taxId,
       cognitoId: user.cognitoId,
+      profileComplete,
     },
     memberships: {
       landlord: user.landlordAccount ? {
         id: user.landlordAccount.id,
         defaultDueDay: user.landlordAccount.defaultDueDay,
         defaultGracePeriodDays: user.landlordAccount.defaultGracePeriodDays,
+        useBusinessName: user.landlordAccount.useBusinessName,
       } : null,
       tenants: user.tenantMemberships.map(tm => ({
         id: tm.id,
@@ -324,9 +342,9 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
 // PATCH /api/auth/profile - Update user profile
 router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
-  const { name, phone, businessName, taxId, notificationEmail } = req.body;
+  const { firstName, lastName, country, name, phone, businessName, taxId, notificationEmail } = req.body;
   logger.info({ userId }, 'Updating user profile');
-  
+
   // Fetch current user to compare values
   const currentUser = await prisma.user.findUnique({
     where: { id: userId },
@@ -335,6 +353,9 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
       email: true,
       notificationEmail: true,
       name: true,
+      firstName: true,
+      lastName: true,
+      country: true,
       phone: true,
       businessName: true,
       taxId: true,
@@ -347,7 +368,25 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
 
   // Build update object with only changed fields
   const updateData: any = {};
-  if (name !== undefined && name !== currentUser.name) updateData.name = name;
+
+  // Handle firstName and lastName - compute name when both are set
+  if (firstName !== undefined && firstName !== currentUser.firstName) updateData.firstName = firstName;
+  if (lastName !== undefined && lastName !== currentUser.lastName) updateData.lastName = lastName;
+  if (country !== undefined && country !== currentUser.country) updateData.country = country;
+
+  // If firstName or lastName is being updated, also update the computed name
+  const newFirstName = firstName !== undefined ? firstName : currentUser.firstName;
+  const newLastName = lastName !== undefined ? lastName : currentUser.lastName;
+  if (newFirstName && newLastName) {
+    const computedName = `${newFirstName} ${newLastName}`.trim();
+    if (computedName !== currentUser.name) {
+      updateData.name = computedName;
+    }
+  } else if (name !== undefined && name !== currentUser.name) {
+    // Fallback: allow direct name update if firstName/lastName not provided
+    updateData.name = name;
+  }
+
   if (phone !== undefined && phone !== currentUser.phone) updateData.phone = phone;
   if (businessName !== undefined && businessName !== currentUser.businessName) updateData.businessName = businessName;
   if (taxId !== undefined && taxId !== currentUser.taxId) updateData.taxId = taxId;
@@ -370,6 +409,9 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
       email: true,
       notificationEmail: true,
       name: true,
+      firstName: true,
+      lastName: true,
+      country: true,
       phone: true,
       businessName: true,
       taxId: true,
@@ -440,7 +482,7 @@ router.delete(
 
       if (landlord) {
         logger.info({ landlordId: landlord.id }, 'Deleting landlord account and cascade data');
-        
+
         // Cascade delete: Payments → TenantMemberships → Units → Properties → LandlordAccount
         for (const property of landlord.properties) {
           for (const unit of property.units) {
@@ -516,9 +558,9 @@ router.delete(
         logger.warn({ email: userEmail, error: err.message }, 'Failed to delete Cognito user');
       }
     } else if (activeTenantMemberships > 0) {
-      logger.info({ 
-        email: userEmail, 
-        activeTenantMemberships 
+      logger.info({
+        email: userEmail,
+        activeTenantMemberships
       }, 'Skipped Cognito deletion - user has active tenant memberships');
     }
 

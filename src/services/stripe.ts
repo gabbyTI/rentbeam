@@ -20,6 +20,15 @@ function getStripeClient(): Stripe {
 export interface CreateConnectedAccountParams {
   email: string;
   country?: string;
+  businessName?: string;
+}
+
+export interface CreatePersonParams {
+  accountId: string;
+  firstName: string;
+  lastName: string;
+  email?: string;
+  phone?: string;
 }
 
 export interface CreateAccountLinkParams {
@@ -34,7 +43,7 @@ class StripeService {
    * Create an Express connected account
    */
   async createConnectedAccount(params: CreateConnectedAccountParams): Promise<Stripe.Account> {
-    const { email, country = 'CA' } = params; // Default to Canada
+    const { email, country = 'CA', businessName } = params; // Default to Canada
 
     try {
       const account = await getStripeClient().accounts.create({
@@ -50,10 +59,40 @@ class StripeService {
           mcc: '6513', // Real Estate Agents and Managers - Rentals
           url: APP_CONFIG.url, // Your app URL
           product_description: 'Residential property rental services and rent collection',
+          name: businessName || undefined, // Prefill business name if provided
         },
       });
 
       return account;
+    } catch (error) {
+      if (error instanceof Stripe.errors.StripeError) {
+        throw new BadRequestError(`Stripe error: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create a person (representative) for a connected account
+   * This prefills the owner/representative information in Stripe onboarding
+   */
+  async createPerson(params: CreatePersonParams): Promise<Stripe.Person> {
+    const { accountId, firstName, lastName, email, phone } = params;
+
+    try {
+      const person = await getStripeClient().accounts.createPerson(accountId, {
+        first_name: firstName,
+        last_name: lastName,
+        email: email || undefined,
+        phone: phone || undefined,
+        relationship: {
+          representative: true,
+          owner: true,
+          title: 'Owner',
+        },
+      });
+
+      return person;
     } catch (error) {
       if (error instanceof Stripe.errors.StripeError) {
         throw new BadRequestError(`Stripe error: ${error.message}`);

@@ -24,7 +24,7 @@ router.post(
       throw new BadRequestError('refreshUrl and returnUrl are required');
     }
 
-    // Get landlord account
+    // Get landlord account with user profile
     const landlord = await prisma.landlordAccount.findUnique({
       where: { userId },
       include: { user: true },
@@ -38,12 +38,33 @@ router.post(
 
     // Create Stripe account if doesn't exist
     if (!stripeAccountId) {
+      // Use user's country from profile, default to Canada
+      const userCountry = landlord.user.country || 'CA';
+
       const account = await stripeService.createConnectedAccount({
         email: landlord.user.email,
-        country: 'CA', // Canada by default
+        country: userCountry,
+        businessName: landlord.user.businessName || undefined,
       });
 
       stripeAccountId = account.id;
+
+      // Create person (representative) with user's name if available
+      if (landlord.user.firstName && landlord.user.lastName) {
+        try {
+          await stripeService.createPerson({
+            accountId: stripeAccountId,
+            firstName: landlord.user.firstName,
+            lastName: landlord.user.lastName,
+            email: landlord.user.email,
+            phone: landlord.user.phone || undefined,
+          });
+          logger.info({ stripeAccountId }, 'Stripe person created with prefilled data');
+        } catch (personError) {
+          // Log but don't fail - Stripe will collect this during onboarding
+          logger.warn({ stripeAccountId, error: personError }, 'Failed to prefill Stripe person');
+        }
+      }
 
       // Save account ID to database
       await prisma.landlordAccount.update({
@@ -51,7 +72,7 @@ router.post(
         data: { stripeAccountId },
       });
 
-      logger.info({ userId, landlordId: landlord.id, stripeAccountId }, 'Stripe Connect account created');
+      logger.info({ userId, landlordId: landlord.id, stripeAccountId, country: userCountry }, 'Stripe Connect account created');
     }
 
     // Create account link with simplified collection
@@ -351,12 +372,12 @@ router.post(
       },
     });
 
-    logger.info({ 
-      userId, 
-      tenantId: membership.id, 
-      amount: fees.totalAmount, 
+    logger.info({
+      userId,
+      tenantId: membership.id,
+      amount: fees.totalAmount,
       month,
-      paymentIntentId: paymentIntent.id 
+      paymentIntentId: paymentIntent.id
     }, 'Manual payment intent created');
 
     res.json(

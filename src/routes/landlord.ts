@@ -17,7 +17,7 @@ const router = Router();
 // PATCH /api/landlord/preferences - Update landlord payment preferences
 router.patch('/preferences', authenticate, catchAsync(async (req: AuthRequest, res) => {
   const userId = req.user!.id;
-  const { defaultDueDay, defaultGracePeriodDays } = req.body;
+  const { defaultDueDay, defaultGracePeriodDays, useBusinessName } = req.body;
 
   // Validation
   if (defaultDueDay !== undefined) {
@@ -47,6 +47,7 @@ router.patch('/preferences', authenticate, catchAsync(async (req: AuthRequest, r
   const updateData: any = {};
   if (defaultDueDay !== undefined) updateData.defaultDueDay = parseInt(defaultDueDay);
   if (defaultGracePeriodDays !== undefined) updateData.defaultGracePeriodDays = parseInt(defaultGracePeriodDays);
+  if (useBusinessName !== undefined) updateData.useBusinessName = Boolean(useBusinessName);
 
   // Update landlord preferences
   const updatedLandlord = await prisma.landlordAccount.update({
@@ -56,6 +57,7 @@ router.patch('/preferences', authenticate, catchAsync(async (req: AuthRequest, r
       id: true,
       defaultDueDay: true,
       defaultGracePeriodDays: true,
+      useBusinessName: true,
     },
   });
 
