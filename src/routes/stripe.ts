@@ -380,9 +380,38 @@ router.post(
     const rentAmount = parseFloat(membership.unit.rentAmount.toString());
     const fees = stripeService.calculateProcessingFee(rentAmount);
 
-    // Generate month
+    // Calculate billing month based on dueDay (same logic as frontend getCurrentRentMonth)
     const now = new Date();
-    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth(); // 0-indexed
+    const currentDay = now.getDate();
+    const dueDay = membership.unit.dueDay;
+
+    // Determine the billing month
+    let rentYear = currentYear;
+    let rentMonth = currentMonth;
+
+    // If we're past the due day this month, billing is for next month
+    if (currentDay > dueDay) {
+      rentMonth = currentMonth + 1;
+      if (rentMonth > 11) {
+        rentMonth = 0;
+        rentYear = currentYear + 1;
+      }
+    }
+
+    // Check if payment window is open (5 days before due date)
+    const dueDate = new Date(rentYear, rentMonth, dueDay);
+    const paymentWindowOpenDate = new Date(dueDate);
+    paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
+
+    // If payment window is not open yet, use previous month
+    if (now < paymentWindowOpenDate) {
+      rentMonth = rentMonth === 0 ? 11 : rentMonth - 1;
+      rentYear = rentMonth === 11 ? rentYear - 1 : rentYear;
+    }
+
+    const month = `${rentYear}-${String(rentMonth + 1).padStart(2, '0')}`;
 
     // Check for duplicate payment
     const existingPayment = await prisma.payment.findFirst({
