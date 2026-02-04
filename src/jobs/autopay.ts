@@ -100,7 +100,9 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           }
 
           const rentAmount = Number(tenant.unit.rentAmount);
-          const { processingFee, totalAmount } = stripeService.calculateProcessingFee(rentAmount);
+          // Use paymentMethodType to calculate correct fee (Card vs PAD)
+          const paymentMethodType = (tenant as any).paymentMethodType || 'card';
+          const { processingFee, totalAmount } = stripeService.calculateProcessingFee(rentAmount, paymentMethodType);
 
           // Convert to cents for Stripe
           const amountInCents = Math.round(totalAmount * 100);
@@ -139,6 +141,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             customerId: tenant.stripeCustomerId,
             paymentMethodId: tenant.defaultPaymentMethodId,
             connectedAccountId: landlordStripeAccountId, // Route to landlord
+            mandateId: (tenant as any).mandateId || undefined, // Pass mandate for ACSS Debit
             metadata: {
               tenantMembershipId: tenant.id,
               month: currentMonth,

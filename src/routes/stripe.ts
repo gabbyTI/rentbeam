@@ -260,7 +260,13 @@ router.post(
         user: true,
         unit: {
           include: {
-            property: true,
+            property: {
+              include: {
+                landlord: {
+                  include: { user: true }
+                }
+              }
+            },
           },
         },
       },
@@ -312,8 +318,16 @@ router.post(
       }
     }
 
+    // Determine payment method types based on landlord's country
+    const landlordUser = membership.unit.property.landlord.user;
+    const paymentMethodTypes = ['card'];
+
+    if (landlordUser.country === 'CA') {
+      paymentMethodTypes.push('acss_debit');
+    }
+
     // Create SetupIntent
-    const setupIntent = await stripeService.createSetupIntent(customerId);
+    const setupIntent = await stripeService.createSetupIntent(customerId, paymentMethodTypes);
 
     logger.info({ userId, tenantId: membership.id, customerId }, 'Setup intent created for payment method');
 
@@ -378,7 +392,9 @@ router.post(
 
     // Calculate fees
     const rentAmount = parseFloat(membership.unit.rentAmount.toString());
-    const fees = stripeService.calculateProcessingFee(rentAmount);
+    // Use paymentMethodType to calculate correct fee (Card vs PAD)
+    const paymentMethodType = (membership as any).paymentMethodType || 'card';
+    const fees = stripeService.calculateProcessingFee(rentAmount, paymentMethodType);
 
     // Calculate billing month based on dueDay (same logic as frontend getCurrentRentMonth)
     const now = new Date();
@@ -432,6 +448,7 @@ router.post(
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
       connectedAccountId: landlord.stripeAccountId, // Route to landlord
+      mandateId: membership.mandateId || undefined, // Pass mandate for ACSS Debit
       metadata: {
         tenantMembershipId: membership.id,
         month,

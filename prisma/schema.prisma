@@ -106,6 +106,8 @@ model TenantMembership {
   stripeCustomerId       String?
   defaultPaymentMethodId String?
   paymentMethodLabel     String?
+  mandateId              String?
+  paymentMethodType      String?
 
   status    MembershipStatus @default(ACTIVE)
   createdAt DateTime         @default(now())

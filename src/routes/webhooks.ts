@@ -92,10 +92,17 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
 
   // Get payment method details
   const paymentMethod = await stripeService.getPaymentMethod(paymentMethodId);
-  
+  const mandateId = setupIntent.mandate as string; // Capture mandate ID for PAD
+
   let label = 'Card';
+  let type = 'card';
+
   if (paymentMethod.card) {
     label = `${paymentMethod.card.brand.charAt(0).toUpperCase() + paymentMethod.card.brand.slice(1)} •••• ${paymentMethod.card.last4}`;
+    type = 'card';
+  } else if (paymentMethod.acss_debit) {
+    label = `Bank Account •••• ${paymentMethod.acss_debit.last4}`;
+    type = 'acss_debit';
   }
 
   // Update tenant membership
@@ -104,6 +111,8 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
     data: {
       defaultPaymentMethodId: paymentMethodId,
       paymentMethodLabel: label,
+      paymentMethodType: type,
+      mandateId: mandateId || null,
       // Reset failure count when new payment method is added
       autopayFailureCount: 0,
       lastAutopayFailureAt: null,
@@ -118,10 +127,10 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
     },
   });
 
-  logger.info({ 
-    tenantMembershipId: membership.id, 
-    paymentMethodId, 
-    label 
+  logger.info({
+    tenantMembershipId: membership.id,
+    paymentMethodId,
+    label
   }, 'Payment method saved for tenant');
 
   // Send confirmation email
@@ -153,19 +162,19 @@ async function handleSetupIntentSucceeded(setupIntent: Stripe.SetupIntent) {
  * Create payment record
  */
 async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent) {
-  logger.info({ 
-    paymentIntentId: paymentIntent.id, 
+  logger.info({
+    paymentIntentId: paymentIntent.id,
     metadata: paymentIntent.metadata,
     amount: paymentIntent.amount,
-    status: paymentIntent.status 
+    status: paymentIntent.status
   }, 'Processing payment_intent.succeeded webhook');
 
   const { tenantMembershipId, month, rentAmount, processingFee } = paymentIntent.metadata;
 
   if (!tenantMembershipId || !month) {
-    logger.warn({ 
+    logger.warn({
       paymentIntentId: paymentIntent.id,
-      metadata: paymentIntent.metadata 
+      metadata: paymentIntent.metadata
     }, 'PaymentIntent missing required metadata');
     return;
   }
@@ -189,10 +198,10 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
   // Use processing fee from metadata
   const actualProcessingFee = parseFloat(processingFee || '0');
 
-  logger.info({ 
-    rentAmount, 
-    processingFee: actualProcessingFee, 
-    totalAmount: paymentIntent.amount / 100 
+  logger.info({
+    rentAmount,
+    processingFee: actualProcessingFee,
+    totalAmount: paymentIntent.amount / 100
   }, 'Calculated payment amounts');
 
   // Create payment record
@@ -248,12 +257,12 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
 
     logger.info({ paymentId: payment.id }, 'Payment success email sent');
   } catch (error: any) {
-    logger.error({ 
-      error: error.message, 
+    logger.error({
+      error: error.message,
       stack: error.stack,
       paymentIntentId: paymentIntent.id,
       tenantMembershipId,
-      month 
+      month
     }, 'Failed to create payment record');
     throw error;
   }

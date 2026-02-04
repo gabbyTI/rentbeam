@@ -53,6 +53,8 @@ class StripeService {
         capabilities: {
           card_payments: { requested: true },
           transfers: { requested: true },
+          // Request PAD capability for Canadian accounts
+          ...(country === 'CA' ? { acss_debit_payments: { requested: true } } : {}),
         },
         business_type: 'individual', // Simplify for most landlords
         business_profile: {
@@ -186,13 +188,22 @@ class StripeService {
   /**
    * Calculate processing fee for tenant payment
    */
-  calculateProcessingFee(rentAmount: number): {
+  calculateProcessingFee(rentAmount: number, paymentMethodType: string = 'card'): {
     rentAmount: number;
     processingFee: number;
     totalAmount: number;
   } {
-    const percentageFee = rentAmount * 0.029; // 2.9%
-    const fixedFee = 0.30;
+    let percentageFee = 0;
+    let fixedFee = 0;
+
+    if (paymentMethodType === 'acss_debit') {
+      percentageFee = rentAmount * 0.01; // 1.0%
+      fixedFee = 0.40; // CA$0.40
+    } else {
+      // Default to Card
+      percentageFee = rentAmount * 0.029; // 2.9%
+      fixedFee = 0.30;
+    }
     const processingFee = percentageFee + fixedFee;
     const totalAmount = rentAmount + processingFee;
 
@@ -227,11 +238,22 @@ class StripeService {
   /**
    * Create a SetupIntent to save payment method
    */
-  async createSetupIntent(customerId: string): Promise<Stripe.SetupIntent> {
+  async createSetupIntent(customerId: string, paymentMethodTypes: string[] = ['card']): Promise<Stripe.SetupIntent> {
     try {
       const setupIntent = await getStripeClient().setupIntents.create({
         customer: customerId,
-        payment_method_types: ['card'],
+        payment_method_types: paymentMethodTypes,
+        ...(paymentMethodTypes.includes('acss_debit') ? {
+          payment_method_options: {
+            acss_debit: {
+              currency: 'cad',
+              mandate_options: {
+                payment_schedule: 'sporadic',
+                transaction_type: 'personal',
+              },
+            },
+          },
+        } : {}),
       });
       return setupIntent;
     } catch (error) {
@@ -255,6 +277,7 @@ class StripeService {
     metadata?: Record<string, string>;
     confirm?: boolean;
     offSession?: boolean;
+    mandateId?: string; // NEW: Required for ACSS Debit
   }): Promise<Stripe.PaymentIntent> {
     try {
       const paymentIntent = await getStripeClient().paymentIntents.create({
@@ -271,6 +294,8 @@ class StripeService {
         },
         // Optional platform fee (if specified)
         ...(params.applicationFeeAmount ? { application_fee_amount: params.applicationFeeAmount } : {}),
+        // Add mandate if provided (for PAD)
+        ...(params.mandateId ? { mandate: params.mandateId } : {}),
       });
       return paymentIntent;
     } catch (error) {
