@@ -52,7 +52,7 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/properties
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { name, address } = req.body;
+  const { name, address, acceptOnlinePayments } = req.body;
 
   if (!name || !address) {
     throw new ValidationError('Name and address are required');
@@ -66,12 +66,17 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     throw new ForbiddenError('Not authorized as landlord');
   }
 
+  // If enabling online payments, require Stripe onboarding
+  if (acceptOnlinePayments === true && !landlord.payoutsEnabled) {
+    throw new ForbiddenError('Complete bank account setup to accept online payments');
+  }
+
   const property = await prisma.property.create({
     data: {
       landlordId: landlord.id,
       name,
       address,
-      acceptOnlinePayments: false // Default to manual payments
+      acceptOnlinePayments: acceptOnlinePayments ?? false
     }
   });
 
@@ -110,9 +115,9 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
     if (acceptOnlinePayments === true && !landlord.payoutsEnabled) {
       throw new ForbiddenError('Complete bank account setup to accept online payments');
     }
-    
+
     updateData.acceptOnlinePayments = acceptOnlinePayments;
-    
+
     // If disabling online payments, auto-disable autopay for all tenants in this property
     if (acceptOnlinePayments === false) {
       await prisma.tenantMembership.updateMany({
