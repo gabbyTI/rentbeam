@@ -277,7 +277,8 @@ class StripeService {
     metadata?: Record<string, string>;
     confirm?: boolean;
     offSession?: boolean;
-    mandateId?: string; // NEW: Required for ACSS Debit
+    mandateId?: string; // Required for ACSS Debit
+    paymentMethodTypes?: string[]; // NEW: Specify allowed payment method types
   }): Promise<Stripe.PaymentIntent> {
     try {
       const paymentIntent = await getStripeClient().paymentIntents.create({
@@ -288,6 +289,8 @@ class StripeService {
         off_session: params.offSession !== undefined ? params.offSession : true,
         confirm: params.confirm !== undefined ? params.confirm : true,
         metadata: params.metadata || {},
+        // Specify payment method types (includes acss_debit for bank payments)
+        payment_method_types: params.paymentMethodTypes || ['card'],
         // Route payment to landlord's connected account
         transfer_data: {
           destination: params.connectedAccountId,

@@ -134,6 +134,9 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             'Processing autopay charge'
           );
 
+          // Determine payment method types based on tenant's saved payment method
+          const paymentMethodTypes = paymentMethodType === 'acss_debit' ? ['acss_debit'] : ['card'];
+
           // Create payment intent with off_session flag
           const paymentIntent = await stripeService.createPaymentIntent({
             amount: amountInCents,
@@ -142,6 +145,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             paymentMethodId: tenant.defaultPaymentMethodId,
             connectedAccountId: landlordStripeAccountId, // Route to landlord
             mandateId: (tenant as any).mandateId || undefined, // Pass mandate for ACSS Debit
+            paymentMethodTypes, // Pass correct payment method types
             metadata: {
               tenantMembershipId: tenant.id,
               month: currentMonth,

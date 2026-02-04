@@ -252,25 +252,48 @@ router.post(
   authenticate,
   catchAsync(async (req: AuthRequest, res) => {
     const userId = req.user!.id;
+    const { membershipId } = req.body;
 
-    // Get tenant membership
-    const membership = await prisma.tenantMembership.findFirst({
-      where: { userId, status: 'ACTIVE' },
-      include: {
-        user: true,
-        unit: {
-          include: {
-            property: {
-              include: {
-                landlord: {
-                  include: { user: true }
+    // Get tenant membership - use specific membershipId if provided
+    let membership;
+    if (membershipId) {
+      membership = await prisma.tenantMembership.findFirst({
+        where: { id: membershipId, userId, status: 'ACTIVE' },
+        include: {
+          user: true,
+          unit: {
+            include: {
+              property: {
+                include: {
+                  landlord: {
+                    include: { user: true }
+                  }
                 }
-              }
+              },
             },
           },
         },
-      },
-    });
+      });
+    } else {
+      // Fallback for backward compatibility - use findFirst
+      membership = await prisma.tenantMembership.findFirst({
+        where: { userId, status: 'ACTIVE' },
+        include: {
+          user: true,
+          unit: {
+            include: {
+              property: {
+                include: {
+                  landlord: {
+                    include: { user: true }
+                  }
+                }
+              },
+            },
+          },
+        },
+      });
+    }
 
     if (!membership) {
       throw new NotFoundError('Active tenant membership not found');
@@ -349,10 +372,15 @@ router.post(
   authenticate,
   catchAsync(async (req: AuthRequest, res) => {
     const userId = req.user!.id;
+    const { membershipId } = req.body;
 
-    // Get tenant membership with unit details
+    if (!membershipId) {
+      throw new BadRequestError('membershipId is required');
+    }
+
+    // Get specific tenant membership with unit details
     const membership = await prisma.tenantMembership.findFirst({
-      where: { userId, status: 'ACTIVE' },
+      where: { id: membershipId, userId, status: 'ACTIVE' },
       include: {
         unit: {
           include: {
@@ -441,6 +469,9 @@ router.post(
       throw new BadRequestError(`Payment already recorded for ${month}`);
     }
 
+    // Determine payment method types based on tenant's saved payment method
+    const paymentMethodTypes = paymentMethodType === 'acss_debit' ? ['acss_debit'] : ['card'];
+
     // Create PaymentIntent (convert dollars to cents)
     const paymentIntent = await stripeService.createPaymentIntent({
       amount: Math.round(fees.totalAmount * 100),
@@ -448,7 +479,8 @@ router.post(
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
       connectedAccountId: landlord.stripeAccountId, // Route to landlord
-      mandateId: membership.mandateId || undefined, // Pass mandate for ACSS Debit
+      mandateId: (membership as any).mandateId || undefined, // Pass mandate for ACSS Debit
+      paymentMethodTypes, // Pass correct payment method types
       metadata: {
         tenantMembershipId: membership.id,
         month,
@@ -484,10 +516,15 @@ router.delete(
   authenticate,
   catchAsync(async (req: AuthRequest, res) => {
     const userId = req.user!.id;
+    const membershipId = req.query.membershipId as string;
 
-    // Get tenant membership
+    if (!membershipId) {
+      throw new BadRequestError('membershipId is required');
+    }
+
+    // Get specific tenant membership
     const membership = await prisma.tenantMembership.findFirst({
-      where: { userId, status: 'ACTIVE' },
+      where: { id: membershipId, userId, status: 'ACTIVE' },
     });
 
     if (!membership) {

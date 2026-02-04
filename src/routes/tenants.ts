@@ -152,7 +152,8 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const inviteToken = crypto.randomBytes(32).toString('hex');
 
   // Parse and validate data
-  const parsedMoveInDate = moveInDate ? new Date(moveInDate) : new Date();
+  // Append T12:00:00 to prevent UTC midnight from shifting to previous day in local time
+  const parsedMoveInDate = moveInDate ? new Date(moveInDate + 'T12:00:00') : new Date();
 
   // Create tenant membership
   const membership = await prisma.tenantMembership.create({
@@ -341,9 +342,13 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
     }, 'Tenant already moved out'));
   }
 
-  // Validate moveOutDate >= moveInDate
+  // Validate moveOutDate >= moveInDate (compare dates only, not times)
+  // Use UTC to avoid timezone issues
   const parsedMoveOutDate = new Date(moveOutDate);
-  if (parsedMoveOutDate < membership.moveInDate) {
+  const moveOutDateOnly = Date.UTC(parsedMoveOutDate.getUTCFullYear(), parsedMoveOutDate.getUTCMonth(), parsedMoveOutDate.getUTCDate());
+  const moveInDateOnly = Date.UTC(membership.moveInDate.getUTCFullYear(), membership.moveInDate.getUTCMonth(), membership.moveInDate.getUTCDate());
+
+  if (moveOutDateOnly < moveInDateOnly) {
     throw new ValidationError('Move-out date cannot be before move-in date');
   }
 

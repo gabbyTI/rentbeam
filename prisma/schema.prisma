@@ -169,6 +169,7 @@ enum PaymentMethod {
 
 enum PaymentStatus {
   PENDING
+  PROCESSING  // Bank transfer initiated, awaiting confirmation
   SUCCEEDED
   FAILED
 }

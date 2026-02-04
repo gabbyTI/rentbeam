@@ -288,6 +288,7 @@ router.get('/me', authenticate, catchAsync(async (req, res) => {
     include: {
       landlordAccount: true,
       tenantMemberships: {
+        where: { status: 'ACTIVE' },
         include: {
           unit: {
             include: {

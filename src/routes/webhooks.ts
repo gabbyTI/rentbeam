@@ -48,6 +48,10 @@ router.post('/stripe', async (req: Request, res: Response) => {
         await handleSetupIntentSucceeded(event.data.object as Stripe.SetupIntent);
         break;
 
+      case 'payment_intent.processing':
+        await handlePaymentIntentProcessing(event.data.object as Stripe.PaymentIntent);
+        break;
+
       case 'payment_intent.succeeded':
         await handlePaymentIntentSucceeded(event.data.object as Stripe.PaymentIntent);
         break;
@@ -181,20 +185,6 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
 
   logger.info({ tenantMembershipId, month, rentAmount, processingFee }, 'Extracted metadata from payment intent');
 
-  // Check if payment already recorded (idempotency)
-  const existingPayment = await prisma.payment.findFirst({
-    where: {
-      stripePaymentIntentId: paymentIntent.id,
-    },
-  });
-
-  if (existingPayment) {
-    logger.info({ paymentId: existingPayment.id, paymentIntentId: paymentIntent.id }, 'Payment already recorded (idempotency check)');
-    return;
-  }
-
-  logger.info('No existing payment found, proceeding to create new payment record');
-
   // Use processing fee from metadata
   const actualProcessingFee = parseFloat(processingFee || '0');
 
@@ -204,37 +194,58 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     totalAmount: paymentIntent.amount / 100
   }, 'Calculated payment amounts');
 
-  // Create payment record
+  // Upsert payment record - update PROCESSING to SUCCEEDED, or create new
   try {
-    const payment = await prisma.payment.create({
-      data: {
-        tenantMembershipId,
-        rentAmount: parseFloat(rentAmount || '0'),
-        processingFee: actualProcessingFee,
-        platformFee: 0,
-        totalAmount: paymentIntent.amount / 100, // Convert from cents
-        amount: parseFloat(rentAmount || '0'), // Legacy field
-        method: 'CARD',
-        status: 'SUCCEEDED',
-        date: new Date(),
-        month,
-        stripePaymentIntentId: paymentIntent.id,
-        note: 'Paid via Stripe',
-      },
-      include: {
-        tenantMembership: {
-          include: {
-            user: true,
-            unit: {
-              include: {
-                property: true,
-              },
+    const existingPayment = await prisma.payment.findUnique({
+      where: { stripePaymentIntentId: paymentIntent.id },
+    });
+
+    let payment;
+    if (existingPayment) {
+      // Update existing PROCESSING payment to SUCCEEDED
+      payment = await prisma.payment.update({
+        where: { stripePaymentIntentId: paymentIntent.id },
+        data: { status: 'SUCCEEDED' },
+        include: {
+          tenantMembership: {
+            include: {
+              user: true,
+              unit: { include: { property: true } },
             },
           },
         },
-      },
-    });
+      });
+      logger.info({ paymentId: payment.id }, 'Updated PROCESSING payment to SUCCEEDED');
+    } else {
+      // Create new SUCCEEDED payment (card payments skip processing)
+      payment = await prisma.payment.create({
+        data: {
+          tenantMembershipId,
+          rentAmount: parseFloat(rentAmount || '0'),
+          processingFee: actualProcessingFee,
+          platformFee: 0,
+          totalAmount: paymentIntent.amount / 100,
+          amount: parseFloat(rentAmount || '0'),
+          method: 'CARD',
+          status: 'SUCCEEDED',
+          date: new Date(),
+          month,
+          stripePaymentIntentId: paymentIntent.id,
+          note: 'Paid via Stripe',
+        },
+        include: {
+          tenantMembership: {
+            include: {
+              user: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+      logger.info({ paymentId: payment.id }, 'Created new SUCCEEDED payment (card)');
+    }
 
+    // Send success email (for both update and create)
     logger.info({
       paymentId: payment.id,
       tenantMembershipId,
@@ -243,7 +254,6 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
       stripePaymentIntentId: paymentIntent.id,
     }, 'Payment record created successfully');
 
-    // Send success email
     await emailService.sendPaymentSuccessEmail({
       email: payment.tenantMembership.user.email,
       tenantName: payment.tenantMembership.user.name,
@@ -264,6 +274,70 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
       tenantMembershipId,
       month
     }, 'Failed to create payment record');
+    throw error;
+  }
+}
+
+/**
+ * Handle payment_intent.processing
+ * Create PROCESSING payment record for bank transfers (ACSS Debit)
+ */
+async function handlePaymentIntentProcessing(paymentIntent: Stripe.PaymentIntent) {
+  logger.info({
+    paymentIntentId: paymentIntent.id,
+    metadata: paymentIntent.metadata,
+    amount: paymentIntent.amount,
+  }, 'Processing payment_intent.processing webhook');
+
+  const { tenantMembershipId, month, rentAmount, processingFee } = paymentIntent.metadata;
+
+  if (!tenantMembershipId || !month) {
+    logger.warn({ paymentIntentId: paymentIntent.id }, 'PaymentIntent missing required metadata');
+    return;
+  }
+
+  // Check if payment already exists (idempotency)
+  const existingPayment = await prisma.payment.findUnique({
+    where: { stripePaymentIntentId: paymentIntent.id },
+  });
+
+  if (existingPayment) {
+    logger.info({ paymentId: existingPayment.id }, 'Payment already exists for this PaymentIntent');
+    return;
+  }
+
+  const actualProcessingFee = parseFloat(processingFee || '0');
+
+  // Create PROCESSING payment record
+  try {
+    const payment = await prisma.payment.create({
+      data: {
+        tenantMembershipId,
+        rentAmount: parseFloat(rentAmount || '0'),
+        processingFee: actualProcessingFee,
+        platformFee: 0,
+        totalAmount: paymentIntent.amount / 100,
+        amount: parseFloat(rentAmount || '0'),
+        method: 'CARD',
+        status: 'PROCESSING',
+        date: new Date(),
+        month,
+        stripePaymentIntentId: paymentIntent.id,
+        note: 'Bank transfer',
+      },
+    });
+
+    logger.info({
+      paymentId: payment.id,
+      tenantMembershipId,
+      month,
+      status: 'PROCESSING',
+    }, 'PROCESSING payment record created');
+  } catch (error: any) {
+    logger.error({
+      error: error.message,
+      paymentIntentId: paymentIntent.id,
+    }, 'Failed to create PROCESSING payment record');
     throw error;
   }
 }
