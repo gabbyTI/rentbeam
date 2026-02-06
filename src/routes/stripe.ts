@@ -457,11 +457,14 @@ router.post(
 
     const month = `${rentYear}-${String(rentMonth + 1).padStart(2, '0')}`;
 
-    // Check for duplicate payment
+    // Check for duplicate payment (exclude FAILED payments - allow retry)
     const existingPayment = await prisma.payment.findFirst({
       where: {
         tenantMembershipId: membership.id,
         month,
+        status: {
+          in: ['SUCCEEDED', 'PROCESSING', 'PENDING'],
+        },
       },
     });
 

@@ -173,7 +173,7 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     status: paymentIntent.status
   }, 'Processing payment_intent.succeeded webhook');
 
-  const { tenantMembershipId, month, rentAmount, processingFee } = paymentIntent.metadata;
+  const { tenantMembershipId, month, rentAmount, processingFee, autopay } = paymentIntent.metadata;
 
   if (!tenantMembershipId || !month) {
     logger.warn({
@@ -266,6 +266,22 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     });
 
     logger.info({ paymentId: payment.id }, 'Payment success email sent');
+
+    // Reset autopay failure count on successful autopay payment
+    if (autopay === 'true' && payment.tenantMembership.autopayFailureCount > 0) {
+      await prisma.tenantMembership.update({
+        where: { id: tenantMembershipId },
+        data: {
+          autopayFailureCount: 0,
+          lastAutopayFailureAt: null,
+        },
+      });
+
+      logger.info(
+        { tenantMembershipId, paymentId: payment.id },
+        'Autopay failure count reset after successful payment'
+      );
+    }
   } catch (error: any) {
     logger.error({
       error: error.message,
@@ -344,10 +360,10 @@ async function handlePaymentIntentProcessing(paymentIntent: Stripe.PaymentIntent
 
 /**
  * Handle payment_intent.payment_failed
- * Log failure and send notification email
+ * Create FAILED payment record and handle autopay failure tracking
  */
 async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
-  const { tenantMembershipId, month, rentAmount, autopay } = paymentIntent.metadata;
+  const { tenantMembershipId, month, rentAmount, processingFee, autopay } = paymentIntent.metadata;
 
   logger.error({
     paymentIntentId: paymentIntent.id,
@@ -356,7 +372,7 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
     error: paymentIntent.last_payment_error?.message,
   }, 'Payment intent failed');
 
-  if (!tenantMembershipId) {
+  if (!tenantMembershipId || !month) {
     return;
   }
 
@@ -378,12 +394,92 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
     return;
   }
 
+  // Create FAILED payment record
+  const actualProcessingFee = parseFloat(processingFee || '0');
+  const errorMessage = paymentIntent.last_payment_error?.message || 'Payment could not be processed';
+
+  try {
+    await prisma.payment.create({
+      data: {
+        tenantMembershipId,
+        rentAmount: parseFloat(rentAmount || '0'),
+        processingFee: actualProcessingFee,
+        platformFee: 0,
+        totalAmount: paymentIntent.amount / 100,
+        amount: parseFloat(rentAmount || '0'),
+        method: 'CARD',
+        status: 'FAILED',
+        date: new Date(),
+        month,
+        stripePaymentIntentId: paymentIntent.id,
+        note: `Payment failed: ${errorMessage}`,
+      },
+    });
+
+    logger.info({
+      paymentIntentId: paymentIntent.id,
+      tenantMembershipId,
+      month,
+    }, 'FAILED payment record created');
+  } catch (error: any) {
+    logger.error({
+      error: error.message,
+      paymentIntentId: paymentIntent.id,
+    }, 'Failed to create FAILED payment record');
+  }
+
+  // Handle autopay failure tracking
+  if (autopay === 'true') {
+    const currentFailureCount = membership.autopayFailureCount + 1;
+
+    await prisma.tenantMembership.update({
+      where: { id: tenantMembershipId },
+      data: {
+        autopayFailureCount: currentFailureCount,
+        lastAutopayFailureAt: new Date(),
+      },
+    });
+
+    logger.info(
+      { tenantMembershipId, failureCount: currentFailureCount },
+      'Autopay failure count updated'
+    );
+
+    // Disable autopay after 3 failures
+    if (currentFailureCount >= 3) {
+      await prisma.tenantMembership.update({
+        where: { id: tenantMembershipId },
+        data: {
+          autopayEnabled: false,
+          autopayDisabledAt: new Date(),
+          autopayDisableReason: `Autopay disabled after ${currentFailureCount} failed payment attempts. Please update your payment method.`,
+        },
+      });
+
+      logger.warn(
+        { tenantMembershipId, failureCount: currentFailureCount },
+        'Autopay disabled after 3 failed attempts'
+      );
+
+      // Send autopay disabled email
+      await emailService.sendAutopayDisabledEmail({
+        email: membership.user.email,
+        tenantName: membership.user.name,
+        reason: `Your payment method was declined 3 times. Please update your payment method and re-enable autopay.`,
+        propertyName: membership.unit.property.name,
+        unitName: membership.unit.name,
+      });
+
+      return; // Don't send regular failure email, autopay disabled email sent instead
+    }
+  }
+
   // Send failure email
   await emailService.sendPaymentFailedEmail({
     email: membership.user.email,
     tenantName: membership.user.name,
     rentAmount: rentAmount || '0',
-    errorMessage: paymentIntent.last_payment_error?.message || 'Payment could not be processed',
+    errorMessage,
     propertyName: membership.unit.property.name,
     unitName: membership.unit.name,
     isAutopay: autopay === 'true',

@@ -15,7 +15,7 @@ router.use(authenticate);
 // GET /api/payments
 router.get('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  
+
   // Check if landlord or tenant
   const landlord = await prisma.landlordAccount.findUnique({
     where: { userId: user.id }
@@ -107,11 +107,14 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const paymentDate = new Date(date);
   const month = `${paymentDate.getFullYear()}-${String(paymentDate.getMonth() + 1).padStart(2, '0')}`;
 
-  // Check for duplicate payment for this month
+  // Check for duplicate payment for this month (exclude FAILED payments - allow retry)
   const existingPayment = await prisma.payment.findFirst({
     where: {
       tenantMembershipId,
-      month
+      month,
+      status: {
+        in: ['SUCCEEDED', 'PROCESSING', 'PENDING']
+      }
     }
   });
 
@@ -123,10 +126,10 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const rentAmount = parseFloat(membership.unit.rentAmount.toString());
   const difference = Math.abs(parsedAmount - rentAmount);
   if (difference > 1) { // Allow $1 difference for rounding
-    logger.warn({ 
-      tenantId: tenantMembershipId, 
-      expectedRent: rentAmount, 
-      paidAmount: parsedAmount 
+    logger.warn({
+      tenantId: tenantMembershipId,
+      expectedRent: rentAmount,
+      paidAmount: parsedAmount
     }, 'Payment amount does not match rent amount');
   }
 
@@ -154,11 +157,11 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     }
   });
 
-  logger.info({ 
-    paymentId: payment.id, 
-    tenantId: tenantMembershipId, 
-    amount: parsedAmount, 
-    month 
+  logger.info({
+    paymentId: payment.id,
+    tenantId: tenantMembershipId,
+    amount: parsedAmount,
+    month
   }, 'Manual payment recorded');
 
   // Record metrics

@@ -44,7 +44,6 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           status: 'ACTIVE',
           defaultPaymentMethodId: { not: null },
           unit: {
-            dueDay: currentDay,
             property: {
               acceptOnlinePayments: true, // Only process tenants in properties that accept online payments
             },
@@ -79,8 +78,22 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
         result.processed++;
 
         try {
-          // Skip if already paid this month
-          if (tenant.payments.length > 0) {
+          const dueDay = tenant.unit.dueDay;
+          const gracePeriodDays = tenant.unit.gracePeriodDays;
+
+          // Check if today is within the grace period (dueDay to dueDay + gracePeriodDays)
+          if (currentDay < dueDay || currentDay > (dueDay + gracePeriodDays)) {
+            logger.info(
+              { tenantMembershipId: tenant.id, currentDay, dueDay, gracePeriodDays },
+              'Not within grace period, skipping'
+            );
+            result.skipped++;
+            continue;
+          }
+
+          // Skip if already paid this month (SUCCEEDED or PROCESSING only, not FAILED)
+          const successfulPayment = tenant.payments.find(p => p.status === 'SUCCEEDED' || p.status === 'PROCESSING');
+          if (successfulPayment) {
             logger.info(
               { tenantMembershipId: tenant.id, month: currentMonth },
               'Payment already exists for this month, skipping'
@@ -208,87 +221,23 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             error: error.message || 'Unknown error',
           });
 
-          // Handle specific Stripe errors
-          if (error.code === 'card_declined' || error.code === 'insufficient_funds') {
-            // Increment failure count
-            const currentFailureCount = tenant.autopayFailureCount + 1;
-
-            await prisma.tenantMembership.update({
-              where: { id: tenant.id },
-              data: {
-                autopayFailureCount: currentFailureCount,
-                lastAutopayFailureAt: new Date(),
-              },
-            });
-
-            logger.info(
-              { tenantMembershipId: tenant.id, errorCode: error.code, failureCount: currentFailureCount },
-              'Card declined - failure count updated'
-            );
-
-            // Disable autopay after 3 failures
-            if (currentFailureCount >= 3) {
-              await prisma.tenantMembership.update({
-                where: { id: tenant.id },
-                data: {
-                  autopayEnabled: false,
-                  autopayDisabledAt: new Date(),
-                  autopayDisableReason: `Autopay disabled after ${currentFailureCount} failed payment attempts. Please update your payment method.`,
-                },
-              });
-
-              logger.warn(
-                { tenantMembershipId: tenant.id, failureCount: currentFailureCount },
-                'Autopay disabled after 3 failed attempts'
-              );
-
-              // Send autopay disabled email
-              await emailService.sendAutopayDisabledEmail({
-                email: tenant.user.email,
-                tenantName: tenant.user.name,
-                reason: `Your card was declined 3 times. Please update your payment method and re-enable autopay.`,
-                propertyName: tenant.unit.property.name,
-                unitName: tenant.unit.name,
-              });
-            } else {
-              // Send payment failed email (will retry on next run)
-              await emailService.sendPaymentFailedEmail({
-                email: tenant.user.email,
-                tenantName: tenant.user.name,
-                rentAmount: Number(tenant.unit.rentAmount).toFixed(2),
-                errorMessage: error.message || 'Card declined',
-                propertyName: tenant.unit.property.name,
-                unitName: tenant.unit.name,
-                isAutopay: true,
-                failureCount: currentFailureCount,
-              });
-            }
-          } else if (error.code === 'authentication_required') {
-            // Card requires 3D Secure, disable autopay
-            await prisma.tenantMembership.update({
-              where: { id: tenant.id },
-              data: {
-                autopayEnabled: false,
-                autopayDisabledAt: new Date(),
-                autopayDisableReason: 'Card requires authentication - please update payment method',
-              },
-            });
-            logger.warn(
-              { tenantMembershipId: tenant.id },
-              'Autopay disabled due to authentication requirement'
-            );
-
-            // Send email notification
-            await emailService.sendAutopayDisabledEmail({
-              email: tenant.user.email,
-              tenantName: tenant.user.name,
-              reason: 'Your card requires additional authentication. Please update your payment method.',
-              propertyName: tenant.unit.property.name,
-              unitName: tenant.unit.name,
-            });
-          }
+          // Webhook will handle:
+          // - Creating FAILED payment record
+          // - Incrementing failure count
+          // - Sending failure email
+          // - Disabling autopay after 3 strikes
         }
       }
+
+      logger.info(
+        {
+          processed: result.processed,
+          succeeded: result.succeeded,
+          failed: result.failed,
+          skipped: result.skipped,
+        },
+        'Autopay processing complete'
+      );
 
       logger.info(result, 'Autopay processing completed');
       return result;

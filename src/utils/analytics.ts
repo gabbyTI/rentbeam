@@ -55,27 +55,32 @@ export const calculateMonthlyRevenue = (
 ): RevenueMetrics => {
   const [year, monthNum] = month.split('-').map(Number);
   const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
-  
-  // Calculate expected revenue - only from tenants expected to pay this month
+
+
+
+  // Calculate expected revenue - sum rent for all active tenants
   const expected = activeTenants.reduce((sum, tenant) => {
-    const dueDay = tenant.unit.dueDay;
-    const dueDate = new Date(year, monthNum - 1, dueDay);
-    const paymentWindowOpenDate = new Date(dueDate);
-    paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
-    const moveInDate = new Date(tenant.moveInDate);
-    
-    // Only count tenant if they moved in before payment window opened
-    if (moveInDate <= paymentWindowOpenDate) {
-      return sum + parseFloat(tenant.unit.rentAmount.toString());
-    }
-    return sum;
+    const rentAmount = parseFloat(tenant.unit.rentAmount.toString());
+
+
+    return sum + rentAmount;
   }, 0);
 
-  // Calculate collected revenue for this month
-  const monthPayments = payments.filter(p => p.month === month);
-  const collected = monthPayments.reduce((sum, p) => 
+  // Calculate collected revenue for this month (exclude FAILED payments and inactive tenants)
+  const activeTenantIds = new Set(activeTenants.map(t => t.id));
+  const monthPayments = payments.filter(p =>
+    p.month === month &&
+    p.status !== 'FAILED' &&
+    activeTenantIds.has(p.tenantMembershipId)
+  );
+
+
+
+  const collected = monthPayments.reduce((sum, p) =>
     sum + parseFloat(p.amount.toString()), 0
   );
+
+
 
   const rate = expected > 0 ? Math.round((collected / expected) * 100) : 100;
 
@@ -91,16 +96,19 @@ export const getOutstandingBalance = (
 ): OutstandingMetrics => {
   const currentDate = new Date();
   const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-  
+
   const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
-  
+
   let totalOutstanding = 0;
   let tenantsWithOutstanding = 0;
 
   activeTenants.forEach(tenant => {
     const rentAmount = parseFloat(tenant.unit.rentAmount.toString());
-    const payment = payments.find(p => 
-      p.tenantMembershipId === tenant.id && p.month === currentMonth
+    // Only count SUCCEEDED or PROCESSING payments as paid
+    const payment = payments.find(p =>
+      p.tenantMembershipId === tenant.id &&
+      p.month === currentMonth &&
+      (p.status === 'SUCCEEDED' || p.status === 'PROCESSING')
     );
 
     if (!payment) {
@@ -149,17 +157,29 @@ export const getPaymentStatusBreakdown = (
   let unpaid = 0;
 
   activeTenants.forEach(tenant => {
-    const payment = payments.find(p => 
-      p.tenantMembershipId === tenant.id && p.month === month
+    // Only count SUCCEEDED or PROCESSING payments
+    const payment = payments.find(p =>
+      p.tenantMembershipId === tenant.id &&
+      p.month === month &&
+      (p.status === 'SUCCEEDED' || p.status === 'PROCESSING')
     );
 
     if (payment) {
       // Has payment - count it regardless of move-in date
       const dueDay = tenant.unit.dueDay;
-      const dueDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), dueDay);
+
+      // Parse the payment month to get the correct year and month
+      const [paymentYear, paymentMonthNum] = month.split('-').map(Number);
+      const dueDate = new Date(paymentYear, paymentMonthNum - 1, dueDay);
       const paymentDate = new Date(payment.date);
 
-      if (paymentDate > dueDate) {
+      // Compare dates only (ignore time) by comparing date strings
+      const dueDateString = dueDate.toISOString().split('T')[0];
+      const paymentDateString = paymentDate.toISOString().split('T')[0];
+
+
+
+      if (paymentDateString > dueDateString) {
         late++;
       } else {
         paid++;
@@ -209,6 +229,7 @@ export const getRecentPayments = (
   status: 'paid' | 'late';
 }> => {
   return payments
+    .filter(p => p.status === 'SUCCEEDED' || p.status === 'PROCESSING') // Exclude FAILED payments
     .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
     .slice(0, limit)
     .map(p => ({
