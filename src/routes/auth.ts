@@ -373,7 +373,12 @@ router.patch('/profile', authenticate, catchAsync(async (req: AuthRequest, res) 
   // Handle firstName and lastName - compute name when both are set
   if (firstName !== undefined && firstName !== currentUser.firstName) updateData.firstName = firstName;
   if (lastName !== undefined && lastName !== currentUser.lastName) updateData.lastName = lastName;
-  if (country !== undefined && country !== currentUser.country) updateData.country = country;
+  if (country !== undefined && country !== currentUser.country) {
+    if (country !== 'CA') {
+      throw new ValidationError('Currently only available in Canada');
+    }
+    updateData.country = country;
+  }
 
   // If firstName or lastName is being updated, also update the computed name
   const newFirstName = firstName !== undefined ? firstName : currentUser.firstName;

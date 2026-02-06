@@ -4,7 +4,7 @@ import { stripeService } from '../services/stripe.js';
 import prisma from '../lib/prisma.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { catchAsync } from '../utils/catchAsync.js';
-import { BadRequestError, NotFoundError } from '../lib/errors.js';
+import { BadRequestError, NotFoundError, ValidationError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
 
 const router = Router();
@@ -40,6 +40,11 @@ router.post(
     if (!stripeAccountId) {
       // Use user's country from profile, default to Canada
       const userCountry = landlord.user.country || 'CA';
+
+      // Validate country - only Canada is supported for now
+      if (userCountry !== 'CA') {
+        throw new ValidationError('Stripe Connect is currently only available for Canadian landlords');
+      }
 
       const account = await stripeService.createConnectedAccount({
         email: landlord.user.email,
