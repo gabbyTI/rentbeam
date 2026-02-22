@@ -66,7 +66,14 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/tenants (create tenant + send invite)
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { email, firstName, lastName, phone, unitId, moveInDate } = req.body;
+  const {
+    email, firstName, lastName, phone, unitId, moveInDate,
+    // New profile fields (all optional)
+    leaseStartDate, leaseEndDate, leaseType,
+    rentDeposit, dateOfBirth,
+    emergencyContactName, emergencyContactPhone,
+    notes,
+  } = req.body;
 
   if (!email || !firstName || !lastName || !unitId) {
     throw new ValidationError('Missing required fields: email, firstName, lastName, and unitId are required');
@@ -163,7 +170,16 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
       landlordId: landlord.id,
       moveInDate: parsedMoveInDate,
       inviteToken,
-      inviteStatus: 'PENDING'
+      inviteStatus: 'PENDING',
+      // Optional profile fields
+      leaseStartDate: leaseStartDate ? new Date(leaseStartDate + 'T12:00:00') : undefined,
+      leaseEndDate: leaseEndDate ? new Date(leaseEndDate + 'T12:00:00') : undefined,
+      leaseType: leaseType || 'FIXED_TERM',
+      rentDeposit: rentDeposit ? parseFloat(rentDeposit) : undefined,
+      dateOfBirth: dateOfBirth ? new Date(dateOfBirth + 'T12:00:00') : undefined,
+      emergencyContactName: emergencyContactName || undefined,
+      emergencyContactPhone: emergencyContactPhone || undefined,
+      notes: notes || undefined,
     },
     include: {
       user: true,
@@ -436,6 +452,51 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
     outstandingBalance: hasOutstandingBalance,
     unpaidPeriods: hasOutstandingBalance ? [currentMonth] : [],
   }, 'Tenant moved out successfully'));
+}));
+
+// PATCH /api/tenants/:id (update tenant profile fields)
+router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
+  const { id } = req.params;
+  const {
+    leaseStartDate, leaseEndDate, leaseType,
+    rentDeposit, dateOfBirth,
+    emergencyContactName, emergencyContactPhone,
+    notes,
+  } = req.body;
+
+  const landlord = await prisma.landlordAccount.findUnique({ where: { userId: user.id } });
+  if (!landlord) throw new ForbiddenError('Not authorized');
+
+  const membership = await prisma.tenantMembership.findFirst({
+    where: { id, landlordId: landlord.id },
+  });
+  if (!membership) throw new NotFoundError('Tenant not found');
+
+  const updated = await prisma.tenantMembership.update({
+    where: { id },
+    data: {
+      ...(leaseStartDate !== undefined && {
+        leaseStartDate: leaseStartDate ? new Date(leaseStartDate + 'T12:00:00') : null,
+      }),
+      ...(leaseEndDate !== undefined && {
+        leaseEndDate: leaseEndDate ? new Date(leaseEndDate + 'T12:00:00') : null,
+      }),
+      ...(leaseType !== undefined && { leaseType }),
+      ...(rentDeposit !== undefined && {
+        rentDeposit: rentDeposit !== null ? parseFloat(rentDeposit) : null,
+      }),
+      ...(dateOfBirth !== undefined && {
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth + 'T12:00:00') : null,
+      }),
+      ...(emergencyContactName !== undefined && { emergencyContactName }),
+      ...(emergencyContactPhone !== undefined && { emergencyContactPhone }),
+      ...(notes !== undefined && { notes }),
+    },
+    include: { user: true, unit: true },
+  });
+
+  res.json(apiResponse(updated, 'Tenant updated successfully'));
 }));
 
 // GET /api/tenants/:id (get single tenant membership details)

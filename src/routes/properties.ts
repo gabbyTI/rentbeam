@@ -52,10 +52,19 @@ router.get('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/properties
 router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { name, address, acceptOnlinePayments } = req.body;
+  const { name, address, streetAddress, city, province, postalCode, country, acceptOnlinePayments } = req.body;
 
-  if (!name || !address) {
-    throw new ValidationError('Name and address are required');
+  if (!name) {
+    throw new ValidationError('Property name is required');
+  }
+
+  // Require either structured address fields or legacy address string
+  if (!streetAddress && !address) {
+    throw new ValidationError('Address is required');
+  }
+
+  if (streetAddress && (!city || !province || !postalCode)) {
+    throw new ValidationError('City, province, and postal code are required');
   }
 
   const landlord = await prisma.landlordAccount.findUnique({
@@ -71,11 +80,21 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     throw new ForbiddenError('Complete bank account setup to accept online payments');
   }
 
+  // Build computed display address
+  const displayAddress = streetAddress
+    ? `${streetAddress}, ${city}, ${province} ${postalCode}, ${country ?? 'CA'}`
+    : address;
+
   const property = await prisma.property.create({
     data: {
       landlordId: landlord.id,
       name,
-      address,
+      address: displayAddress,
+      streetAddress: streetAddress ?? '',
+      city: city ?? '',
+      province: province ?? '',
+      postalCode: postalCode ?? '',
+      country: country ?? 'CA',
       acceptOnlinePayments: acceptOnlinePayments ?? false
     }
   });
@@ -87,7 +106,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { id } = req.params;
-  const { name, address, acceptOnlinePayments } = req.body;
+  const { name, address, streetAddress, city, province, postalCode, country, acceptOnlinePayments } = req.body;
 
   const landlord = await prisma.landlordAccount.findUnique({
     where: { userId: user.id }
@@ -109,7 +128,23 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   // Build update data
   const updateData: any = {};
   if (name !== undefined) updateData.name = name;
-  if (address !== undefined) updateData.address = address;
+
+  // Handle structured address update
+  if (streetAddress !== undefined) {
+    if (!city || !province || !postalCode) {
+      throw new ValidationError('City, province, and postal code are required');
+    }
+    updateData.streetAddress = streetAddress;
+    updateData.city = city;
+    updateData.province = province;
+    updateData.postalCode = postalCode;
+    updateData.country = country ?? 'CA';
+    updateData.address = `${streetAddress}, ${city}, ${province} ${postalCode}, ${country ?? 'CA'}`;
+  } else if (address !== undefined) {
+    // Legacy fallback: plain string address
+    updateData.address = address;
+  }
+
   if (acceptOnlinePayments !== undefined) {
     // Require Stripe onboarding to enable online payments
     if (acceptOnlinePayments === true && !landlord.payoutsEnabled) {

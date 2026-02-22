@@ -54,7 +54,12 @@ model Property {
   landlordId           String
   landlord             LandlordAccount @relation(fields: [landlordId], references: [id], onDelete: Cascade)
   name                 String
-  address              String
+  address              String          // Computed display string (streetAddress, city, province postalCode)
+  streetAddress        String          @default("")
+  city                 String          @default("")
+  province             String          @default("")
+  postalCode           String          @default("")
+  country              String          @default("CA")
   acceptOnlinePayments Boolean         @default(true)
   createdAt            DateTime        @default(now())
   updatedAt            DateTime        @updatedAt
@@ -113,13 +118,31 @@ model TenantMembership {
   createdAt DateTime         @default(now())
   updatedAt DateTime         @updatedAt
 
-  payments Payment[]
+  // Lease details
+  leaseStartDate        DateTime?
+  leaseEndDate          DateTime?
+  leaseType             LeaseType  @default(FIXED_TERM)
+  rentDeposit           Decimal?   @db.Decimal(10, 2)
+
+  // Tenant profile
+  dateOfBirth           DateTime?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  notes                 String?
+
+  payments    Payment[]
+  documents   TenantDocument[]
 
   @@index([userId])
   @@index([unitId])
   @@index([landlordId])
   @@index([inviteToken])
   @@map("tenant_memberships")
+}
+
+enum LeaseType {
+  FIXED_TERM
+  MONTH_TO_MONTH
 }
 
 enum InviteStatus {
@@ -130,6 +153,32 @@ enum InviteStatus {
 enum MembershipStatus {
   ACTIVE
   INACTIVE
+}
+
+model TenantDocument {
+  id                 String           @id @default(uuid())
+  tenantMembershipId String
+  tenantMembership   TenantMembership @relation(fields: [tenantMembershipId], references: [id], onDelete: Cascade)
+  type               DocumentType
+  fileName           String
+  fileKey            String
+  fileSize           Int
+  mimeType           String
+  uploadedByUserId   String
+  notes              String?
+  createdAt          DateTime         @default(now())
+
+  @@index([tenantMembershipId])
+  @@map("tenant_documents")
+}
+
+enum DocumentType {
+  LEASE
+  MOVE_IN_INSPECTION
+  MOVE_OUT_INSPECTION
+  NOTICE
+  ID_VERIFICATION
+  OTHER
 }
 
 model Payment {

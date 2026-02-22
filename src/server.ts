@@ -14,6 +14,7 @@ import inviteRoutes from './routes/invites.js';
 import stripeRoutes from './routes/stripe.js';
 import webhookRoutes from './routes/webhooks.js';
 import cronRoutes from './routes/cron.js';
+import documentRoutes from './routes/documents.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import prisma from './lib/prisma.js';
 import logger from './lib/logger.js';
@@ -46,7 +47,7 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 
 // JSON middleware for all other routes
 app.use(express.json());
-app.use(pinoHttp({ 
+app.use(pinoHttp({
   logger,
   autoLogging: {
     ignore: (req) => req.url === '/health'
@@ -76,7 +77,8 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/invites', inviteRoutes);
 app.use('/api/stripe/connect', stripeRoutes);
 app.use('/api/stripe', stripeRoutes); // Add non-connect Stripe routes
-app.use('/api/cron', cronRoutes); // Cron endpoints
+app.use('/api/cron', cronRoutes);
+app.use('/api/tenants', documentRoutes); // Document sub-routes under /api/tenants/:id/documents
 
 // Error handler (must be last)
 app.use(errorHandler);
@@ -84,7 +86,7 @@ app.use(errorHandler);
 // Server startup function
 export async function startServer() {
   const PORT = process.env.PORT || 3000;
-  
+
   try {
     // Test database connection
     await prisma.$connect();
@@ -93,7 +95,7 @@ export async function startServer() {
     const server = app.listen(PORT, () => {
       logger.info(`Server running on http://localhost:${PORT}`);
       logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      
+
       // Initialize cron scheduler after server starts
       initializeScheduler();
     });

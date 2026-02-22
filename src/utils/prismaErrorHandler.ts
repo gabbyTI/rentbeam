@@ -53,6 +53,7 @@ export function handlePrismaError(error: any): AppError {
 
   // Query validation error
   if (error instanceof Prisma.PrismaClientValidationError) {
+    console.error('🔴 Prisma validation error:', error.message);
     return new ValidationError('Invalid query parameters');
   }
 
