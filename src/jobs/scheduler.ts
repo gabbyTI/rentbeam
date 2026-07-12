@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import axios from 'axios';
 import logger from '../lib/logger.js';
+import { postMonthlyRentCharges } from './rentCharges.js';
 
 /**
  * Initialize cron jobs
@@ -107,8 +108,19 @@ export function initializeScheduler() {
     }
   });
 
-  logger.info('Cron jobs scheduled: autopay at 00:00 and 10:00, reminders at 09:00 daily');
+  logger.info('Cron jobs scheduled: autopay at 00:00 and 10:00, reminders at 09:00, rent charges at 00:05 daily');
+
+  // Post monthly rent charges at 00:05 daily (just after midnight, after autopay kick-off)
+  const rentChargeJob = cron.schedule('5 0 * * *', async () => {
+    logger.info('Cron: Posting monthly rent charges to ledger');
+    try {
+      const result = await postMonthlyRentCharges();
+      logger.info({ result }, 'Cron: Rent charge posting complete');
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Cron: Rent charge posting failed');
+    }
+  });
 
   // Return jobs for potential cleanup on shutdown
-  return { autopayJob, retryJob, reminderJob };
+  return { autopayJob, retryJob, reminderJob, rentChargeJob };
 }

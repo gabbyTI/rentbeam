@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { stripeService } from '../services/stripe.js';
 import { emailService } from '../services/email.js';
+import { postPayment as postLedgerPayment } from '../services/ledger.js';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
 import Stripe from 'stripe';
@@ -266,6 +267,23 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     });
 
     logger.info({ paymentId: payment.id }, 'Payment success email sent');
+
+    // Post payment to ledger (idempotent — skips if paymentIntentId already recorded)
+    try {
+      const totalPaid = Number(payment.totalAmount);
+      const isAutopay = autopay === 'true';
+      await postLedgerPayment({
+        tenantMembershipId,
+        effectiveDate: payment.date,
+        description: isAutopay ? 'Online Payment – Autopay (Card)' : 'Online Payment (Card)',
+        amount: totalPaid,
+        source: 'STRIPE',
+        referenceId: `PMNT-STRIPE-${paymentIntent.id}`,
+      });
+    } catch (ledgerError: any) {
+      // Non-fatal: log but do not fail the webhook response
+      logger.error({ error: ledgerError.message, paymentIntentId: paymentIntent.id }, 'Failed to post ledger payment entry');
+    }
 
     // Reset autopay failure count on successful autopay payment
     if (autopay === 'true' && payment.tenantMembership.autopayFailureCount > 0) {

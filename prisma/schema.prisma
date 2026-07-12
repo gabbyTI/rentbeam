@@ -15,10 +15,10 @@ model User {
   cognitoId         String?  @unique
   email             String   @unique
   notificationEmail String?
-  name              String   // Computed: firstName + lastName (for display)
+  name              String // Computed: firstName + lastName (for display)
   firstName         String?
   lastName          String?
-  country           String?  // US or CA
+  country           String? // US or CA
   phone             String?
   businessName      String?
   taxId             String?
@@ -54,7 +54,7 @@ model Property {
   landlordId           String
   landlord             LandlordAccount @relation(fields: [landlordId], references: [id], onDelete: Cascade)
   name                 String
-  address              String          // Computed display string (streetAddress, city, province postalCode)
+  address              String // Computed display string (streetAddress, city, province postalCode)
   streetAddress        String          @default("")
   city                 String          @default("")
   province             String          @default("")
@@ -119,10 +119,10 @@ model TenantMembership {
   updatedAt DateTime         @updatedAt
 
   // Lease details
-  leaseStartDate        DateTime?
-  leaseEndDate          DateTime?
-  leaseType             LeaseType  @default(FIXED_TERM)
-  rentDeposit           Decimal?   @db.Decimal(10, 2)
+  leaseStartDate DateTime?
+  leaseEndDate   DateTime?
+  leaseType      LeaseType @default(FIXED_TERM)
+  rentDeposit    Decimal?  @db.Decimal(10, 2)
 
   // Tenant profile
   dateOfBirth           DateTime?
@@ -130,8 +130,9 @@ model TenantMembership {
   emergencyContactPhone String?
   notes                 String?
 
-  payments    Payment[]
-  documents   TenantDocument[]
+  payments      Payment[]
+  documents     TenantDocument[]
+  ledgerEntries LedgerEntry[]
 
   @@index([userId])
   @@index([unitId])
@@ -218,7 +219,7 @@ enum PaymentMethod {
 
 enum PaymentStatus {
   PENDING
-  PROCESSING  // Bank transfer initiated, awaiting confirmation
+  PROCESSING // Bank transfer initiated, awaiting confirmation
   SUCCEEDED
   FAILED
 }
@@ -241,4 +242,58 @@ model OtpVerification {
 
 enum OtpType {
   NOTIFICATION_EMAIL
+}
+
+// ─── Ledger ───────────────────────────────────────────────────────────────────
+
+enum LedgerEntryType {
+  CHARGE // Increases balance (rent, fee, deposit, etc.)
+  PAYMENT // Decreases balance (online or manual payment)
+  CREDIT // Decreases balance (concession, write-off, adjustment)
+}
+
+enum LedgerEntryStatus {
+  PENDING // Informational only — does NOT affect posted balance
+  POSTED // Affects running balance
+  REVERSED // Voided — original row kept; correction is a new row
+}
+
+enum LedgerEntrySource {
+  SYSTEM // Auto-posted by scheduler (e.g. monthly rent charge)
+  STRIPE // Posted by Stripe webhook
+  MANUAL // Posted by landlord manually
+}
+
+model LedgerEntry {
+  id                 String           @id @default(uuid())
+  tenantMembershipId String
+  tenantMembership   TenantMembership @relation(fields: [tenantMembershipId], references: [id], onDelete: Cascade)
+
+  effectiveDate DateTime // Date shown on the statement
+  type          LedgerEntryType
+  status        LedgerEntryStatus @default(POSTED)
+  source        LedgerEntrySource
+
+  // Charge-only fields
+  code String? // e.g. RNTA, FEE, CONC, DEPO, ADJ (null for payments)
+
+  description String // Human-readable label shown to tenant
+
+  // Amounts — only one of these is set per row; the other is null
+  chargeAmount  Decimal? @db.Decimal(10, 2) // Populated for CHARGE rows
+  paymentAmount Decimal? @db.Decimal(10, 2) // Populated for PAYMENT / CREDIT rows
+
+  balanceAfter Decimal @db.Decimal(10, 2) // Running balance after this row posts
+
+  // Reference / audit
+  referenceId String? @unique // Stripe paymentIntentId / eventId / manual ref
+  postedBy    String? // userId of landlord if MANUAL source
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantMembershipId])
+  @@index([tenantMembershipId, status])
+  @@index([tenantMembershipId, effectiveDate])
+  @@index([referenceId])
+  @@map("ledger_entries")
 }

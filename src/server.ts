@@ -15,6 +15,7 @@ import stripeRoutes from './routes/stripe.js';
 import webhookRoutes from './routes/webhooks.js';
 import cronRoutes from './routes/cron.js';
 import documentRoutes from './routes/documents.js';
+import ledgerRoutes from './routes/ledger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import prisma from './lib/prisma.js';
 import logger from './lib/logger.js';
@@ -79,6 +80,7 @@ app.use('/api/stripe/connect', stripeRoutes);
 app.use('/api/stripe', stripeRoutes); // Add non-connect Stripe routes
 app.use('/api/cron', cronRoutes);
 app.use('/api/tenants', documentRoutes); // Document sub-routes under /api/tenants/:id/documents
+app.use('/api/ledger', ledgerRoutes);
 
 // Error handler (must be last)
 app.use(errorHandler);

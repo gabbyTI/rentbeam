@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth.js';
 import { paymentsTotal, paymentsAmountCents } from '../lib/metrics.js';
+import { postPayment as postLedgerPayment } from '../services/ledger.js';
 import prisma from '../lib/prisma.js';
 import { ValidationError, ForbiddenError, NotFoundError } from '../lib/errors.js';
 import { catchAsync } from '../utils/catchAsync.js';
@@ -167,6 +168,23 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Record metrics
   paymentsTotal.inc({ method: 'MANUAL', status: 'success' });
   paymentsAmountCents.inc({ method: 'MANUAL' }, parsedAmount * 100);
+
+  // Post payment to ledger (idempotent — skips if referenceId already recorded)
+  try {
+    const method = (paymentMethod || 'MANUAL') as string;
+    const methodLabel = method === 'CARD' ? 'Card' : 'Cheque/Cash';
+    await postLedgerPayment({
+      tenantMembershipId,
+      effectiveDate: paymentDate,
+      description: `${methodLabel} Payment${note ? ' – ' + note : ''}`,
+      amount: parsedAmount,
+      source: 'MANUAL',
+      referenceId: `PMNT-MANUAL-${payment.id}`,
+      postedBy: user.id,
+    });
+  } catch (ledgerError: any) {
+    logger.warn({ error: ledgerError.message, paymentId: payment.id }, 'Failed to post manual payment to ledger');
+  }
 
   res.status(201).json(apiResponse(payment, 'Payment recorded successfully'));
 }));
