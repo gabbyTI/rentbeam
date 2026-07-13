@@ -9,11 +9,67 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
 import { emailService } from '../services/email.js';
 import { cognitoService } from '../services/cognito.js';
+import { postCharge, postCredit, postPayment, getCurrentBalance } from '../services/ledger.js';
 import logger from '../lib/logger.js';
 
 const router = Router();
 
 router.use(authenticate);
+
+type OpeningLedgerEntryInput = {
+  type: 'CHARGE' | 'PAYMENT' | 'CREDIT';
+  amount: number;
+  description: string;
+  code?: string;
+  effectiveDate?: string;
+};
+
+function validateOpeningEntries(entries: unknown): OpeningLedgerEntryInput[] {
+  if (!entries) return [];
+  if (!Array.isArray(entries)) {
+    throw new ValidationError('openingLedgerEntries must be an array');
+  }
+
+  const normalized = entries.map((entry: any, index: number) => {
+    if (!entry || typeof entry !== 'object') {
+      throw new ValidationError(`openingLedgerEntries[${index}] must be an object`);
+    }
+
+    const type = String(entry.type || '').toUpperCase();
+    if (!['CHARGE', 'PAYMENT', 'CREDIT'].includes(type)) {
+      throw new ValidationError(`openingLedgerEntries[${index}].type must be CHARGE, PAYMENT, or CREDIT`);
+    }
+
+    const amount = typeof entry.amount === 'string' ? parseFloat(entry.amount) : entry.amount;
+    if (typeof amount !== 'number' || Number.isNaN(amount) || amount <= 0) {
+      throw new ValidationError(`openingLedgerEntries[${index}].amount must be a positive number`);
+    }
+
+    const description = String(entry.description || '').trim();
+    if (!description) {
+      throw new ValidationError(`openingLedgerEntries[${index}].description is required`);
+    }
+
+    const normalizedEntry: OpeningLedgerEntryInput = {
+      type: type as OpeningLedgerEntryInput['type'],
+      amount,
+      description,
+      effectiveDate: entry.effectiveDate,
+    };
+
+    if (type === 'CHARGE' || type === 'CREDIT') {
+      const code = String(entry.code || '').trim().toUpperCase();
+      if (!code) {
+        throw new ValidationError(`openingLedgerEntries[${index}].code is required for ${type}`);
+      }
+      normalizedEntry.code = code;
+    }
+
+    return normalizedEntry;
+  });
+
+  return normalized;
+}
 
 // GET /api/tenants (landlord gets their tenants)
 router.get('/', catchAsync(async (req: AuthRequest, res) => {
@@ -72,7 +128,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     leaseStartDate, leaseEndDate, leaseType,
     rentDeposit, dateOfBirth,
     emergencyContactName, emergencyContactPhone,
-    notes,
+    notes, openingLedgerEntries,
   } = req.body;
 
   if (!email || !firstName || !lastName || !unitId) {
@@ -161,6 +217,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   // Parse and validate data
   // Append T12:00:00 to prevent UTC midnight from shifting to previous day in local time
   const parsedMoveInDate = moveInDate ? new Date(moveInDate + 'T12:00:00') : new Date();
+  const parsedOpeningEntries = validateOpeningEntries(openingLedgerEntries);
 
   // Create tenant membership
   const membership = await prisma.tenantMembership.create({
@@ -206,53 +263,67 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   invitesTotal.inc({ status: 'sent' });
   await updateTenantMetrics(prisma);
 
-  // Initial Payment (Assumed Paid): Create a manual payment record for the move-in month
-  const moveInMonth = `${parsedMoveInDate.getFullYear()}-${String(parsedMoveInDate.getMonth() + 1).padStart(2, '0')}`;
+  // Optional opening ledger entries (tenant creation can seed a real opening balance)
+  // Posting order is deterministic so resulting balance is predictable:
+  // CHARGE -> CREDIT -> PAYMENT.
+  const orderedEntries: OpeningLedgerEntryInput[] = [
+    ...parsedOpeningEntries.filter((e) => e.type === 'CHARGE'),
+    ...parsedOpeningEntries.filter((e) => e.type === 'CREDIT'),
+    ...parsedOpeningEntries.filter((e) => e.type === 'PAYMENT'),
+  ];
 
-  // Determine currency based on landlord's country
-  const currency = landlord.user?.country === 'CA' ? 'cad' : 'usd';
-  const rentAmount = Number(unit.rentAmount);
+  for (let i = 0; i < orderedEntries.length; i++) {
+    const entry = orderedEntries[i];
+    const effectiveDate = entry.effectiveDate ? new Date(`${entry.effectiveDate}T12:00:00`) : parsedMoveInDate;
+    const referenceBase = `OPEN-${entry.type}-${membership.id}-${effectiveDate.toISOString().slice(0, 10)}-${i + 1}`;
 
-  // Check if payment already exists (unlikely for new tenant, but safe)
-  const existingInitialPayment = await prisma.payment.findFirst({
-    where: {
-      tenantMembershipId: membership.id,
-      month: moveInMonth
-    }
-  });
-
-  if (!existingInitialPayment) {
-    // Set payment date to the due date of the move-in month (not current date)
-    // This prevents the payment from being marked as "Late"
-    const paymentDate = new Date(parsedMoveInDate.getFullYear(), parsedMoveInDate.getMonth(), unit.dueDay);
-
-    await prisma.payment.create({
-      data: {
+    if (entry.type === 'CHARGE') {
+      await postCharge({
         tenantMembershipId: membership.id,
-        month: moveInMonth,
-        rentAmount,
-        processingFee: 0,
-        totalAmount: rentAmount,
-        amount: rentAmount, // Legacy field
-        status: 'SUCCEEDED',
-        date: paymentDate,
-        method: 'MANUAL',
-        stripePaymentIntentId: `manual-init-${membership.id}-${Date.now()}`, // Fake ID for uniqueness
-        note: 'Initial rent (assumed paid upon invite)'
-      }
-    });
+        effectiveDate,
+        code: entry.code!,
+        description: entry.description,
+        amount: entry.amount,
+        source: 'MANUAL',
+        referenceId: referenceBase,
+        postedBy: user.id,
+      });
+      continue;
+    }
 
-    logger.info({
-      tenantId: membership.id,
-      month: moveInMonth,
-      amount: rentAmount
-    }, 'Created initial manual payment for new tenant');
+    if (entry.type === 'CREDIT') {
+      await postCredit({
+        tenantMembershipId: membership.id,
+        effectiveDate,
+        code: entry.code!,
+        description: entry.description,
+        amount: entry.amount,
+        source: 'MANUAL',
+        referenceId: referenceBase,
+        postedBy: user.id,
+      });
+      continue;
+    }
+
+    await postPayment({
+      tenantMembershipId: membership.id,
+      effectiveDate,
+      description: entry.description,
+      amount: entry.amount,
+      source: 'MANUAL',
+      referenceId: referenceBase,
+      postedBy: user.id,
+    });
   }
+
+  const openingBalance = await getCurrentBalance(membership.id);
 
 
   res.status(201).json(apiResponse({
     membership,
-    inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`
+    inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`,
+    openingLedgerEntriesPosted: orderedEntries.length,
+    openingBalance,
   }, 'Tenant created successfully'));
 }));
 
@@ -368,16 +439,9 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
     throw new ValidationError('Move-out date cannot be before move-in date');
   }
 
-  // Check for unpaid rent
-  const currentMonth = new Date().toISOString().slice(0, 7); // "2026-01"
-  const unpaidPayment = await prisma.payment.findFirst({
-    where: {
-      tenantMembershipId: id,
-      month: currentMonth,
-    }
-  });
-
-  const hasOutstandingBalance = !unpaidPayment;
+  // Ledger is source of truth for outstanding balance
+  const currentBalance = await getCurrentBalance(id);
+  const hasOutstandingBalance = currentBalance > 0.005;
 
   // Update membership: set INACTIVE, disable autopay, set move-out dates, null invite token
   const updatedMembership = await prisma.tenantMembership.update({
@@ -450,7 +514,7 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
   res.json(apiResponse({
     membership: updatedMembership,
     outstandingBalance: hasOutstandingBalance,
-    unpaidPeriods: hasOutstandingBalance ? [currentMonth] : [],
+    unpaidPeriods: hasOutstandingBalance ? ['LEDGER_OUTSTANDING'] : [],
   }, 'Tenant moved out successfully'));
 }));
 

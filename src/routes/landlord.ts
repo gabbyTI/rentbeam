@@ -82,7 +82,7 @@ router.get('/dashboard/analytics', authenticate, catchAsync(async (req: AuthRequ
   const currentMonth = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
 
   // Fetch all required data
-  const [units, tenants, payments] = await Promise.all([
+  const [units, tenants, ledgerEntries] = await Promise.all([
     // Get all units for this landlord
     prisma.unit.findMany({
       where: {
@@ -105,8 +105,8 @@ router.get('/dashboard/analytics', authenticate, catchAsync(async (req: AuthRequ
         }
       }
     }),
-    // Get all payments for this landlord
-    prisma.payment.findMany({
+    // Get all ledger entries for this landlord
+    prisma.ledgerEntry.findMany({
       where: {
         tenantMembership: {
           landlordId: landlord.id
@@ -124,17 +124,17 @@ router.get('/dashboard/analytics', authenticate, catchAsync(async (req: AuthRequ
         }
       },
       orderBy: {
-        date: 'desc'
+        effectiveDate: 'desc'
       }
     })
   ]);
 
   // Calculate metrics
   const occupancy = calculateOccupancyRate(units, tenants);
-  const revenue = calculateMonthlyRevenue(tenants, payments, currentMonth);
-  const outstanding = getOutstandingBalance(tenants, payments);
-  const paymentStatus = getPaymentStatusBreakdown(tenants, payments, currentMonth);
-  const recentActivity = getRecentPayments(payments, 10);
+  const revenue = calculateMonthlyRevenue(tenants, ledgerEntries, currentMonth);
+  const outstanding = getOutstandingBalance(tenants, ledgerEntries);
+  const paymentStatus = getPaymentStatusBreakdown(tenants, ledgerEntries, currentMonth);
+  const recentActivity = getRecentPayments(ledgerEntries, 10);
 
   // Count active tenants stats
   const activeTenants = tenants.filter(t => t.status === 'ACTIVE');
