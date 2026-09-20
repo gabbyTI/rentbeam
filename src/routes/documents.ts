@@ -40,7 +40,7 @@ async function getTenantMembership(membershipId: string, userId: string) {
  * Landlord only. Returns a presigned PUT URL the browser can use to upload directly to storage.
  */
 router.post('/:id/documents/upload-url', catchAsync(async (req: AuthRequest, res) => {
-    const { id } = req.params;
+    const { id } = req.params as { id: string };
     const { fileName, mimeType, fileSize } = req.body;
 
     if (!fileName || !mimeType || !fileSize) {
@@ -77,7 +77,7 @@ router.post('/:id/documents/upload-url', catchAsync(async (req: AuthRequest, res
  * Landlord only. Confirms the upload completed and creates the DB record.
  */
 router.post('/:id/documents/confirm', catchAsync(async (req: AuthRequest, res) => {
-    const { id } = req.params;
+    const { id } = req.params as { id: string };
     const { fileKey, fileName, type, fileSize, mimeType, notes } = req.body;
 
     if (!fileKey || !fileName || !type || !fileSize || !mimeType) {
@@ -112,7 +112,7 @@ router.post('/:id/documents/confirm', catchAsync(async (req: AuthRequest, res) =
  * Landlord or the tenant themselves.
  */
 router.get('/:id/documents', catchAsync(async (req: AuthRequest, res) => {
-    const { id } = req.params;
+    const { id } = req.params as { id: string };
     const userId = req.user!.id;
 
     // Allow landlord OR the tenant who owns this membership
@@ -141,7 +141,7 @@ router.get('/:id/documents', catchAsync(async (req: AuthRequest, res) => {
  * Landlord or the tenant themselves. Returns a 1-hour presigned download URL.
  */
 router.get('/:id/documents/:docId/url', catchAsync(async (req: AuthRequest, res) => {
-    const { id, docId } = req.params;
+    const { id, docId } = req.params as { id: string; docId: string };
     const userId = req.user!.id;
 
     const landlord = await prisma.landlordAccount.findUnique({ where: { userId } });
@@ -168,7 +168,7 @@ router.get('/:id/documents/:docId/url', catchAsync(async (req: AuthRequest, res)
  * Landlord only.
  */
 router.delete('/:id/documents/:docId', catchAsync(async (req: AuthRequest, res) => {
-    const { id, docId } = req.params;
+    const { id, docId } = req.params as { id: string; docId: string };
 
     await getLandlordMembership(id, req.user!.id);
 

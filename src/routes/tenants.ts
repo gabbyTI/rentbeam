@@ -330,7 +330,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/tenants/:id/resend-invite
 router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
 
   const membership = await prisma.tenantMembership.findUnique({
     where: { id },
@@ -386,7 +386,7 @@ router.post('/:id/resend-invite', catchAsync(async (req: AuthRequest, res) => {
 // POST /api/tenants/:id/move-out (move out tenant)
 router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { moveOutDate, note } = req.body;
 
   if (!moveOutDate) {
@@ -521,7 +521,7 @@ router.post('/:id/move-out', catchAsync(async (req: AuthRequest, res) => {
 // PATCH /api/tenants/:id (update tenant profile fields)
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const {
     leaseStartDate, leaseEndDate, leaseType,
     rentDeposit, dateOfBirth,
@@ -566,7 +566,7 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
 // GET /api/tenants/:id (get single tenant membership details)
 router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
 
   const membership = await prisma.tenantMembership.findUnique({
     where: { id },
@@ -610,7 +610,7 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
 // PATCH /api/tenants/:id/user-info (landlord updates tenant user information)
 router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { firstName, lastName, phone } = req.body;
 
   // Validate at least one field is provided
@@ -672,7 +672,7 @@ router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
 
 // PATCH /api/tenants/:id
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { autopayEnabled, paymentMethodLabel } = req.body;
 
   const updatedMembership = await prisma.tenantMembership.update({
@@ -685,7 +685,7 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
 
 // DELETE /api/tenants/:id
 router.delete('/:id', catchAsync(async (req: AuthRequest, res) => {
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
 
   await prisma.tenantMembership.delete({ where: { id } });
 
@@ -744,7 +744,7 @@ router.post('/transfer', catchAsync(async (req: AuthRequest, res) => {
 // PATCH /api/tenants/:id/autopay (toggle autopay)
 router.patch('/:id/autopay', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { autopayEnabled } = req.body;
 
   if (typeof autopayEnabled !== 'boolean') {

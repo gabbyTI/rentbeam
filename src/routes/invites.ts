@@ -12,7 +12,7 @@ const router = Router();
 
 // GET /api/invites/:token
 router.get('/:token', catchAsync(async (req, res) => {
-  const { token } = req.params;
+  const { token } = req.params as { token: string };
 
   const membership = await prisma.tenantMembership.findUnique({
     where: { inviteToken: token },
@@ -64,7 +64,7 @@ router.get('/:token', catchAsync(async (req, res) => {
 
 // POST /api/invites/:token/accept
 router.post('/:token/accept', catchAsync(async (req, res) => {
-  const { token } = req.params;
+  const { token } = req.params as { token: string };
   const { password } = req.body;
 
   // Find membership

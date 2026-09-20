@@ -105,7 +105,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 // PATCH /api/properties/:id
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { name, address, streetAddress, city, province, postalCode, country, acceptOnlinePayments } = req.body;
 
   const landlord = await prisma.landlordAccount.findUnique({
@@ -183,7 +183,7 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
 // DELETE /api/properties/:id
 router.delete('/:id', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
 
   const landlord = await prisma.landlordAccount.findUnique({
     where: { userId: user.id }

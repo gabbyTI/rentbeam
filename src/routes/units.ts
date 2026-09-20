@@ -73,7 +73,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
 // PATCH /api/units/:id
 router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
   const { name, rentAmount, dueDay, gracePeriodDays } = req.body;
 
   const updated = await prisma.unit.update({
@@ -86,7 +86,7 @@ router.patch('/:id', catchAsync(async (req: AuthRequest, res) => {
 
 // DELETE /api/units/:id
 router.delete('/:id', catchAsync(async (req: AuthRequest, res) => {
-  const { id } = req.params;
+  const { id } = req.params as { id: string };
 
   await prisma.unit.delete({ where: { id } });
 

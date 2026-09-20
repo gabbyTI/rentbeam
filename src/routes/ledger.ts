@@ -46,7 +46,7 @@ async function resolveMembership(tenantMembershipId: string, userId: string) {
 // ─── GET /api/ledger/:tenantMembershipId ──────────────────────────────────────
 // Full statement — accessible by landlord or the tenant themselves
 router.get('/:tenantMembershipId', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId } = req.params;
+  const { tenantMembershipId } = req.params as { tenantMembershipId: string };
   const { fromDate, toDate, includePending } = req.query;
 
   await resolveMembership(tenantMembershipId, req.user!.id);
@@ -63,7 +63,7 @@ router.get('/:tenantMembershipId', catchAsync(async (req: AuthRequest, res) => {
 // ─── GET /api/ledger/:tenantMembershipId/balance ──────────────────────────────
 // Current balance summary
 router.get('/:tenantMembershipId/balance', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId } = req.params;
+  const { tenantMembershipId } = req.params as { tenantMembershipId: string };
 
   await resolveMembership(tenantMembershipId, req.user!.id);
 
@@ -75,7 +75,7 @@ router.get('/:tenantMembershipId/balance', catchAsync(async (req: AuthRequest, r
 // ─── POST /api/ledger/:tenantMembershipId/charge ──────────────────────────────
 // Landlord manually posts a charge (rent, fee, deposit, special, etc.)
 router.post('/:tenantMembershipId/charge', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId } = req.params;
+  const { tenantMembershipId } = req.params as { tenantMembershipId: string };
   const { code, description, amount, effectiveDate } = req.body;
 
   const { isLandlord } = await resolveMembership(tenantMembershipId, req.user!.id);
@@ -109,7 +109,7 @@ router.post('/:tenantMembershipId/charge', catchAsync(async (req: AuthRequest, r
 // ─── POST /api/ledger/:tenantMembershipId/payment ────────────────────────────
 // Landlord manually posts a payment (cheque, cash, e-transfer)
 router.post('/:tenantMembershipId/payment', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId } = req.params;
+  const { tenantMembershipId } = req.params as { tenantMembershipId: string };
   const { description, amount, effectiveDate, referenceId } = req.body;
 
   const { isLandlord } = await resolveMembership(tenantMembershipId, req.user!.id);
@@ -143,7 +143,7 @@ router.post('/:tenantMembershipId/payment', catchAsync(async (req: AuthRequest, 
 // ─── POST /api/ledger/:tenantMembershipId/credit ─────────────────────────────
 // Landlord manually posts a credit/concession (reduces balance)
 router.post('/:tenantMembershipId/credit', catchAsync(async (req: AuthRequest, res) => {
-  const { tenantMembershipId } = req.params;
+  const { tenantMembershipId } = req.params as { tenantMembershipId: string };
   const { code, description, amount, effectiveDate } = req.body;
 
   const { isLandlord } = await resolveMembership(tenantMembershipId, req.user!.id);
