@@ -429,9 +429,15 @@ router.post(
       throw new BadRequestError('There is no outstanding balance to pay');
     }
 
-    const customAmount = amount !== undefined && amount !== null ? Number(amount) : outstandingBalance;
-    const requestedAmount = Number.isFinite(customAmount) ? customAmount : outstandingBalance;
-    const paymentAmount = Math.min(Math.max(requestedAmount, 0), outstandingBalance);
+    const hasCustomAmount = amount !== undefined && amount !== null;
+    const customAmount = hasCustomAmount ? Number(amount) : outstandingBalance;
+    if (hasCustomAmount && (!Number.isFinite(customAmount) || customAmount <= 0)) {
+      throw new BadRequestError('Payment amount must be greater than zero');
+    }
+    if (hasCustomAmount && customAmount > outstandingBalance) {
+      throw new BadRequestError('Payment amount cannot exceed the outstanding balance');
+    }
+    const paymentAmount = hasCustomAmount ? customAmount : outstandingBalance;
 
     // Use paymentMethodType to calculate correct fee (Card vs PAD)
     const paymentMethodType = (membership as any).paymentMethodType || 'card';
@@ -439,19 +445,21 @@ router.post(
 
     const month = new Date().toISOString().slice(0, 7);
 
-    // Check for duplicate payment (exclude FAILED payments - allow retry)
+    // Block only concurrent payment attempts. Successful payments can be partial,
+    // so a monthly Payment row must not prevent another payment while the ledger
+    // still has an outstanding balance.
     const existingPayment = await prisma.payment.findFirst({
       where: {
         tenantMembershipId: membership.id,
         month,
         status: {
-          in: ['SUCCEEDED', 'PROCESSING', 'PENDING'],
+          in: ['PROCESSING', 'PENDING'],
         },
       },
     });
 
     if (existingPayment) {
-      throw new BadRequestError(`Payment already recorded for ${month}`);
+      throw new BadRequestError(`A payment is already processing for ${month}`);
     }
 
     // Determine payment method types based on tenant's saved payment method
