@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { CognitoJwtVerifier } from 'aws-jwt-verify';
-import { UnauthorizedError, NotFoundError } from '../lib/errors.js';
+import { UnauthorizedError } from '../lib/errors.js';
 import prisma from '../lib/prisma.js';
 
 // Lazy-load Cognito JWT verifier
@@ -53,7 +53,9 @@ export const authenticate = async (
     });
 
     if (!user) {
-      throw new NotFoundError('User not found');
+      throw new UnauthorizedError(
+        'We couldn\'t complete your sign-in. Please try again. If the problem continues, contact support.'
+      );
     }
 
     // Attach user to request
@@ -66,7 +68,7 @@ export const authenticate = async (
 
     next();
   } catch (error) {
-    if (error instanceof UnauthorizedError || error instanceof NotFoundError) {
+    if (error instanceof UnauthorizedError) {
       next(error);
     } else {
       next(new UnauthorizedError('Invalid token'));

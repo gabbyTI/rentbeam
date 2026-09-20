@@ -94,24 +94,12 @@ router.post('/login', catchAsync(async (req, res) => {
   try {
     authResult = await cognitoService.login(normalizedEmail, password);
   } catch (error: any) {
-    // Handle specific Cognito errors
-    if (error.name === 'NotAuthorizedException') {
-      if (error.message.includes('disabled')) {
-        throw new UnauthorizedError('This account has been disabled');
-      }
-      throw new UnauthorizedError('Invalid email or password');
-    }
-    if (error.name === 'UserNotFoundException') {
-      throw new UnauthorizedError('Invalid email or password');
-    }
-    if (error.name === 'UserNotConfirmedException') {
-      throw new UnauthorizedError('Please verify your email before logging in');
-    }
-    throw error;
+    logger.warn({ email: normalizedEmail, errorName: error.name }, 'Login failed');
+    throw new UnauthorizedError('Invalid email or password');
   }
 
   if (!authResult?.IdToken) {
-    throw new UnauthorizedError('Login failed');
+    throw new UnauthorizedError('Invalid email or password');
   }
 
   // Get user from database using normalized email
@@ -133,7 +121,8 @@ router.post('/login', catchAsync(async (req, res) => {
   });
 
   if (!user) {
-    throw new NotFoundError('User not found');
+    logger.warn({ email: normalizedEmail }, 'Login succeeded in Cognito but no database user was found');
+    throw new UnauthorizedError('Invalid email or password');
   }
 
   logger.info({ userId: user.id, email: normalizedEmail }, 'User login successful');
