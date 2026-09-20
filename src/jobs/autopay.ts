@@ -3,6 +3,7 @@ import { stripeService } from '../services/stripe.js';
 import { cronExecutionsTotal, cronLastRunTimestamp, paymentsTotal, paymentsAmountCents } from '../lib/metrics.js';
 import { emailService } from '../services/email.js';
 import logger from '../lib/logger.js';
+import { getOutstandingBalance } from '../services/ledger.js';
 
 interface AutopayResult {
   processed: number;
@@ -112,10 +113,16 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             continue;
           }
 
-          const rentAmount = Number(tenant.unit.rentAmount);
+          const outstandingBalance = await getOutstandingBalance(tenant.id);
+          if (outstandingBalance <= 0) {
+            logger.info({ tenantMembershipId: tenant.id }, 'No outstanding ledger balance for autopay, skipping');
+            result.skipped++;
+            continue;
+          }
+
           // Use paymentMethodType to calculate correct fee (Card vs PAD)
           const paymentMethodType = (tenant as any).paymentMethodType || 'card';
-          const { processingFee, totalAmount } = stripeService.calculateProcessingFee(rentAmount, paymentMethodType);
+          const { processingFee, totalAmount } = stripeService.calculateProcessingFee(outstandingBalance, paymentMethodType);
 
           // Convert to cents for Stripe
           const amountInCents = Math.round(totalAmount * 100);
@@ -138,7 +145,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           logger.info(
             {
               tenantMembershipId: tenant.id,
-              rentAmount,
+              outstandingBalance,
               processingFee,
               totalAmount,
               amountInCents,
@@ -162,8 +169,9 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             metadata: {
               tenantMembershipId: tenant.id,
               month: currentMonth,
-              rentAmount: rentAmount.toFixed(2),
+              rentAmount: outstandingBalance.toFixed(2),
               processingFee: processingFee.toFixed(2),
+              ledgerBalance: outstandingBalance.toFixed(2),
               autopay: 'true',
             },
             confirm: true,

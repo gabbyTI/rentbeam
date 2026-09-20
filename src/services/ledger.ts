@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
+import { emailService } from './email.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -143,6 +144,14 @@ export async function postCharge(params: PostChargeParams) {
     balanceAfter,
   }, 'Ledger charge posted');
 
+  await notifyTenantOfLedgerEntry({
+    tenantMembershipId,
+    entryType: 'CHARGE',
+    description,
+    amount,
+    balanceAfter,
+  });
+
   return entry;
 }
 
@@ -193,6 +202,14 @@ export async function postPayment(params: PostPaymentParams) {
     balanceAfter,
     source,
   }, 'Ledger payment posted');
+
+  await notifyTenantOfLedgerEntry({
+    tenantMembershipId,
+    entryType: 'PAYMENT',
+    description,
+    amount,
+    balanceAfter,
+  });
 
   return entry;
 }
@@ -245,7 +262,51 @@ export async function postCredit(params: PostCreditParams) {
     balanceAfter,
   }, 'Ledger credit posted');
 
+  await notifyTenantOfLedgerEntry({
+    tenantMembershipId,
+    entryType: 'CREDIT',
+    description,
+    amount,
+    balanceAfter,
+  });
+
   return entry;
+}
+
+async function notifyTenantOfLedgerEntry(params: {
+  tenantMembershipId: string;
+  entryType: 'CHARGE' | 'PAYMENT' | 'CREDIT';
+  description: string;
+  amount: number;
+  balanceAfter: number;
+}) {
+  try {
+    const membership = await prisma.tenantMembership.findUnique({
+      where: { id: params.tenantMembershipId },
+      include: {
+        user: true,
+        unit: { include: { property: true } },
+      },
+    });
+
+    if (!membership || !membership.user) return;
+
+    const recipientEmail = membership.user.notificationEmail || membership.user.email;
+    if (!recipientEmail) return;
+
+    await emailService.sendLedgerEntryAlert({
+      email: recipientEmail,
+      tenantName: membership.user.name,
+      propertyName: membership.unit.property.name,
+      unitName: membership.unit.name,
+      entryType: params.entryType,
+      description: params.description,
+      amount: params.amount.toFixed(2),
+      balanceAfter: params.balanceAfter.toFixed(2),
+    });
+  } catch (error) {
+    logger.error({ error, tenantMembershipId: params.tenantMembershipId }, 'Failed to notify tenant of ledger update');
+  }
 }
 
 /**
@@ -255,6 +316,25 @@ export async function postCredit(params: PostCreditParams) {
  */
 export async function getCurrentBalance(tenantMembershipId: string): Promise<number> {
   return getLastPostedBalance(tenantMembershipId);
+}
+
+/**
+ * Return the positive outstanding amount currently due from a tenant.
+ * Negative balances represent credits, which should not be charged again.
+ */
+export async function getOutstandingBalance(tenantMembershipId: string): Promise<number> {
+  const entries = await prisma.ledgerEntry.findMany({
+    where: { tenantMembershipId, status: 'POSTED' },
+  });
+
+  const latestEntry = [...entries].sort((a, b) => {
+    const effectiveDiff = new Date(b.effectiveDate).getTime() - new Date(a.effectiveDate).getTime();
+    if (effectiveDiff !== 0) return effectiveDiff;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  })[0];
+
+  const currentBalance = latestEntry ? Number(latestEntry.balanceAfter) : 0;
+  return Math.max(currentBalance, 0);
 }
 
 /**

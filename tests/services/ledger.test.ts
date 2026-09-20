@@ -20,6 +20,12 @@ jest.mock('../../src/lib/logger.js', () => ({
   __esModule: true,
   default: { info: jest.fn(), warn: jest.fn(), error: jest.fn() },
 }));
+jest.mock('../../src/services/email.js', () => ({
+  __esModule: true,
+  emailService: {
+    sendLedgerEntryAlert: jest.fn(),
+  },
+}));
 
 import prismaMock_ from '../../src/lib/prisma.js';
 const prismaMock = prismaMock_ as unknown as DeepMockProxy<PrismaClient>;
@@ -30,7 +36,9 @@ import {
   getCurrentBalance,
   getStatement,
   getLedgerSummary,
+  getOutstandingBalance,
 } from '../../src/services/ledger.js';
+import { emailService } from '../../src/services/email.js';
 
 // ─── Reset mock state between tests ────────────────────────────────
 beforeEach(() => {
@@ -105,6 +113,73 @@ describe('postCharge', () => {
     expect(Number(callData.chargeAmount)).toBe(500);
     expect(Number(callData.balanceAfter)).toBe(500); // 0 + 500
     expect(callData.paymentAmount).toBeNull();
+  });
+
+  it('returns the outstanding ledger balance instead of the scheduled rent amount', async () => {
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([
+      makeEntry({
+        type: 'CHARGE',
+        code: 'RNTA',
+        description: 'Apartment Rent (2026-07)',
+        chargeAmount: new Prisma.Decimal(1200),
+        paymentAmount: null,
+        balanceAfter: new Prisma.Decimal(1200),
+        createdAt: new Date('2026-07-01T00:00:00Z'),
+      }),
+      makeEntry({
+        type: 'PAYMENT',
+        code: null,
+        description: 'Tenant payment',
+        chargeAmount: null,
+        paymentAmount: new Prisma.Decimal(300),
+        balanceAfter: new Prisma.Decimal(900),
+        createdAt: new Date('2026-07-02T00:00:00Z'),
+      }),
+    ] as any);
+
+    const amount = await getOutstandingBalance(MEMBERSHIP_ID);
+
+    expect(amount).toBe(900);
+  });
+
+  it('sends a ledger update notification to the tenant when a charge is posted', async () => {
+    prismaMock.ledgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
+    prismaMock.ledgerEntry.create.mockResolvedValue(makeEntry({ balanceAfter: new Prisma.Decimal(500) }) as any);
+    prismaMock.tenantMembership.findUnique.mockResolvedValue({
+      id: MEMBERSHIP_ID,
+      user: {
+        id: 'user-1',
+        name: 'Test Tenant',
+        email: 'tenant@example.com',
+        notificationEmail: 'alerts@example.com',
+      },
+      unit: {
+        name: 'Unit 101',
+        property: { name: 'Main Property' },
+      },
+    } as any);
+
+    await postCharge({
+      tenantMembershipId: MEMBERSHIP_ID,
+      effectiveDate: TODAY,
+      code: 'RNTA',
+      description: 'Apartment Rent (2026-07)',
+      amount: 500,
+      source: 'SYSTEM',
+    });
+
+    expect(emailService.sendLedgerEntryAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: 'alerts@example.com',
+        tenantName: 'Test Tenant',
+        propertyName: 'Main Property',
+        unitName: 'Unit 101',
+        entryType: 'CHARGE',
+        description: 'Apartment Rent (2026-07)',
+        amount: '500.00',
+      })
+    );
   });
 
   it('adds charge on top of existing balance', async () => {

@@ -6,6 +6,7 @@ import { apiResponse } from '../utils/apiResponse.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import { BadRequestError, NotFoundError, ValidationError } from '../lib/errors.js';
 import logger from '../lib/logger.js';
+import { getOutstandingBalance } from '../services/ledger.js';
 
 const router = Router();
 
@@ -377,7 +378,7 @@ router.post(
   authenticate,
   catchAsync(async (req: AuthRequest, res) => {
     const userId = req.user!.id;
-    const { membershipId } = req.body;
+    const { membershipId, amount } = req.body;
 
     if (!membershipId) {
       throw new BadRequestError('membershipId is required');
@@ -423,44 +424,20 @@ router.post(
     // Determine currency based on landlord's country
     const currency = landlord.user.country === 'CA' ? 'cad' : 'usd';
 
-    // Calculate fees
-    const rentAmount = parseFloat(membership.unit.rentAmount.toString());
+    const outstandingBalance = await getOutstandingBalance(membership.id);
+    if (outstandingBalance <= 0) {
+      throw new BadRequestError('There is no outstanding balance to pay');
+    }
+
+    const customAmount = amount !== undefined && amount !== null ? Number(amount) : outstandingBalance;
+    const requestedAmount = Number.isFinite(customAmount) ? customAmount : outstandingBalance;
+    const paymentAmount = Math.min(Math.max(requestedAmount, 0), outstandingBalance);
+
     // Use paymentMethodType to calculate correct fee (Card vs PAD)
     const paymentMethodType = (membership as any).paymentMethodType || 'card';
-    const fees = stripeService.calculateProcessingFee(rentAmount, paymentMethodType);
+    const fees = stripeService.calculateProcessingFee(paymentAmount, paymentMethodType);
 
-    // Calculate billing month based on dueDay (same logic as frontend getCurrentRentMonth)
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const currentMonth = now.getMonth(); // 0-indexed
-    const currentDay = now.getDate();
-    const dueDay = membership.unit.dueDay;
-
-    // Determine the billing month
-    let rentYear = currentYear;
-    let rentMonth = currentMonth;
-
-    // If we're past the due day this month, billing is for next month
-    if (currentDay > dueDay) {
-      rentMonth = currentMonth + 1;
-      if (rentMonth > 11) {
-        rentMonth = 0;
-        rentYear = currentYear + 1;
-      }
-    }
-
-    // Check if payment window is open (5 days before due date)
-    const dueDate = new Date(rentYear, rentMonth, dueDay);
-    const paymentWindowOpenDate = new Date(dueDate);
-    paymentWindowOpenDate.setDate(dueDate.getDate() - 5);
-
-    // If payment window is not open yet, use previous month
-    if (now < paymentWindowOpenDate) {
-      rentMonth = rentMonth === 0 ? 11 : rentMonth - 1;
-      rentYear = rentMonth === 11 ? rentYear - 1 : rentYear;
-    }
-
-    const month = `${rentYear}-${String(rentMonth + 1).padStart(2, '0')}`;
+    const month = new Date().toISOString().slice(0, 7);
 
     // Check for duplicate payment (exclude FAILED payments - allow retry)
     const existingPayment = await prisma.payment.findFirst({
@@ -486,14 +463,15 @@ router.post(
       currency,
       customerId: membership.stripeCustomerId,
       paymentMethodId: membership.defaultPaymentMethodId,
-      connectedAccountId: landlord.stripeAccountId, // Route to landlord
-      mandateId: (membership as any).mandateId || undefined, // Pass mandate for ACSS Debit
-      paymentMethodTypes, // Pass correct payment method types
+      connectedAccountId: landlord.stripeAccountId,
+      mandateId: (membership as any).mandateId || undefined,
+      paymentMethodTypes,
       metadata: {
         tenantMembershipId: membership.id,
         month,
         rentAmount: fees.rentAmount.toString(),
         processingFee: fees.processingFee.toString(),
+        ledgerBalance: outstandingBalance.toString(),
       },
     });
 
@@ -502,13 +480,16 @@ router.post(
       tenantId: membership.id,
       amount: fees.totalAmount,
       month,
-      paymentIntentId: paymentIntent.id
+      paymentIntentId: paymentIntent.id,
+      outstandingBalance,
     }, 'Manual payment intent created');
 
     res.json(
       apiResponse({
         clientSecret: paymentIntent.client_secret,
         paymentIntentId: paymentIntent.id,
+        amount: paymentAmount,
+        outstandingBalance,
         ...fees,
       })
     );

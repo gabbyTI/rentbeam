@@ -412,6 +412,76 @@ ${!params.autopayEnabled ? 'Pay Now: ' + process.env.FRONTEND_URL + '/tenant/das
     }
   },
 
+  async sendLedgerEntryAlert(params: {
+    email: string;
+    tenantName: string;
+    propertyName: string;
+    unitName: string;
+    entryType: 'CHARGE' | 'PAYMENT' | 'CREDIT';
+    description: string;
+    amount: string;
+    balanceAfter: string;
+  }): Promise<void> {
+    const typeLabel = {
+      CHARGE: 'Charge Added',
+      PAYMENT: 'Payment Received',
+      CREDIT: 'Credit Applied',
+    }[params.entryType];
+
+    const direction = params.entryType === 'CHARGE'
+      ? 'added to your ledger'
+      : params.entryType === 'CREDIT'
+        ? 'applied as a credit'
+        : 'applied to your balance';
+
+    try {
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
+        to: params.email,
+        subject: `Ledger Update - ${typeLabel}`,
+        html: `
+          <h2>📊 Ledger Update</h2>
+          <p>Hi ${params.tenantName},</p>
+          <p>A ${params.entryType.toLowerCase()} has ${direction} for ${params.propertyName} - Unit ${params.unitName}.</p>
+
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <h3 style="margin-top: 0;">Entry Details</h3>
+            <p><strong>Type:</strong> ${typeLabel}</p>
+            <p><strong>Description:</strong> ${params.description}</p>
+            <p><strong>Amount:</strong> $${params.amount}</p>
+            <p><strong>Balance After:</strong> $${params.balanceAfter}</p>
+          </div>
+
+          <p>Visit your dashboard to review the full ledger and payment status.</p>
+          <a href="${process.env.FRONTEND_URL}/tenant/dashboard" style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block; margin: 20px 0;">View Dashboard</a>
+
+          <hr>
+          <p style="color: #666; font-size: 12px;">This is an automated update from RentBeam.</p>
+        `,
+        text: `
+Ledger Update 📊
+
+Hi ${params.tenantName},
+
+A ${params.entryType.toLowerCase()} has ${direction} for ${params.propertyName} - Unit ${params.unitName}.
+
+Entry Details:
+Type: ${typeLabel}
+Description: ${params.description}
+Amount: $${params.amount}
+Balance After: $${params.balanceAfter}
+
+Visit your dashboard to review the full ledger and payment status.
+${process.env.FRONTEND_URL}/tenant/dashboard
+        `,
+      });
+
+      logger.info({ email: params.email, entryType: params.entryType }, '📧 Ledger entry alert sent');
+    } catch (error) {
+      logger.error({ error, email: params.email }, 'Failed to send ledger entry alert');
+    }
+  },
+
   async sendNotificationEmailVerification(email: string, code: string, userName: string): Promise<void> {
     try {
       await resend.emails.send({
