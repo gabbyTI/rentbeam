@@ -1,6 +1,6 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import cors from 'cors';
-import pinoHttp from 'pino-http';
+import { pinoHttp } from 'pino-http';
 import { APP_CONFIG } from './config/app.js';
 import promBundle from 'express-prom-bundle';
 import healthRoutes from './routes/health.js';
@@ -48,7 +48,7 @@ app.use('/api/webhooks', express.raw({ type: 'application/json' }), webhookRoute
 
 // JSON middleware for all other routes
 app.use(express.json());
-app.use(pinoHttp({
+app.use(pinoHttp<Request, Response>({
   logger,
   autoLogging: {
     ignore: (req) => req.url === '/health'
