@@ -82,13 +82,15 @@ function calculateBalance(entries: Array<{
   chargeAmount: Prisma.Decimal | null;
   paymentAmount: Prisma.Decimal | null;
 }>): number {
-  return entries.reduce((balance, entry) => {
-    if (entry.type === 'CHARGE') return balance + Number(entry.chargeAmount ?? 0);
+  const balanceInCents = entries.reduce((balance, entry) => {
+    if (entry.type === 'CHARGE') return balance + Math.round(Number(entry.chargeAmount ?? 0) * 100);
     if (entry.type === 'PAYMENT' || entry.type === 'CREDIT') {
-      return balance - Number(entry.paymentAmount ?? 0);
+      return balance - Math.round(Number(entry.paymentAmount ?? 0) * 100);
     }
     return balance;
   }, 0);
+
+  return balanceInCents / 100;
 }
 
 // ─── Core Service ─────────────────────────────────────────────────────────────
@@ -113,7 +115,7 @@ export async function postCharge(params: PostChargeParams) {
   }
 
   const previousBalance = await getLastPostedBalance(tenantMembershipId);
-  const balanceAfter = previousBalance + amount;
+  const balanceAfter = Number((previousBalance + amount).toFixed(2));
 
   const entry = await prisma.ledgerEntry.create({
     data: {
@@ -172,7 +174,7 @@ export async function postPayment(params: PostPaymentParams) {
   }
 
   const previousBalance = await getLastPostedBalance(tenantMembershipId);
-  const balanceAfter = previousBalance - amount; // Can go negative (credit)
+  const balanceAfter = Number((previousBalance - amount).toFixed(2)); // Can go negative (credit)
 
   const entry = await prisma.ledgerEntry.create({
     data: {
@@ -231,7 +233,7 @@ export async function postCredit(params: PostCreditParams) {
   }
 
   const previousBalance = await getLastPostedBalance(tenantMembershipId);
-  const balanceAfter = previousBalance - amount; // Credits reduce balance, can go negative
+  const balanceAfter = Number((previousBalance - amount).toFixed(2)); // Credits reduce balance, can go negative
 
   const entry = await prisma.ledgerEntry.create({
     data: {
@@ -365,8 +367,9 @@ export async function getStatement(
 
   let runningBalance = 0;
   return entries.map((e) => {
-    if (e.type === 'CHARGE') runningBalance += Number(e.chargeAmount ?? 0);
-    if (e.type === 'PAYMENT' || e.type === 'CREDIT') runningBalance -= Number(e.paymentAmount ?? 0);
+    if (e.type === 'CHARGE') runningBalance += Math.round(Number(e.chargeAmount ?? 0) * 100) / 100;
+    if (e.type === 'PAYMENT' || e.type === 'CREDIT') runningBalance -= Math.round(Number(e.paymentAmount ?? 0) * 100) / 100;
+    runningBalance = Number(runningBalance.toFixed(2));
 
     return {
     id: e.id,

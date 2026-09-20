@@ -424,13 +424,13 @@ router.post(
     // Determine currency based on landlord's country
     const currency = landlord.user.country === 'CA' ? 'cad' : 'usd';
 
-    const outstandingBalance = await getOutstandingBalance(membership.id);
+    const outstandingBalance = Number((await getOutstandingBalance(membership.id)).toFixed(2));
     if (outstandingBalance <= 0) {
       throw new BadRequestError('There is no outstanding balance to pay');
     }
 
     const hasCustomAmount = amount !== undefined && amount !== null;
-    const customAmount = hasCustomAmount ? Number(amount) : outstandingBalance;
+    const customAmount = hasCustomAmount ? Number(Number(amount).toFixed(2)) : outstandingBalance;
     if (hasCustomAmount && (!Number.isFinite(customAmount) || customAmount <= 0)) {
       throw new BadRequestError('Payment amount must be greater than zero');
     }
