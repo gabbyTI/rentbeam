@@ -16,6 +16,42 @@ interface AutopayResult {
   }>;
 }
 
+export interface AutopayWindow {
+  dueDate: Date;
+  graceEndDate: Date;
+  billingMonth: string;
+  isWithinWindow: boolean;
+}
+
+function formatBillingMonth(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function getDueDate(year: number, month: number, dueDay: number): Date {
+  const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
+  return new Date(year, month, Math.min(dueDay, lastDayOfMonth));
+}
+
+export function getAutopayWindow(
+  now: Date,
+  dueDay: number,
+  gracePeriodDays: number
+): AutopayWindow {
+  const currentMonthDueDate = getDueDate(now.getFullYear(), now.getMonth(), dueDay);
+  const dueDate = now >= currentMonthDueDate
+    ? currentMonthDueDate
+    : getDueDate(now.getFullYear(), now.getMonth() - 1, dueDay);
+  const graceEndDate = new Date(dueDate);
+  graceEndDate.setDate(graceEndDate.getDate() + gracePeriodDays);
+
+  return {
+    dueDate,
+    graceEndDate,
+    billingMonth: formatBillingMonth(dueDate),
+    isWithinWindow: now >= dueDate && now <= graceEndDate,
+  };
+}
+
 /**
  * Process autopay charges for all eligible tenants
  * Called daily by cron job or EventBridge
@@ -25,7 +61,8 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
   try {
     const today = new Date();
     const currentDay = today.getDate();
-    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+    const currentMonth = formatBillingMonth(today);
+    const previousMonth = formatBillingMonth(new Date(today.getFullYear(), today.getMonth() - 1, 1));
 
     logger.info({ date: today, currentDay, currentMonth }, 'Starting autopay processing');
 
@@ -67,7 +104,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
           },
           payments: {
             where: {
-              month: currentMonth,
+              month: { in: [currentMonth, previousMonth] },
             },
           },
         },
@@ -81,23 +118,22 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
         try {
           const dueDay = tenant.unit.dueDay;
           const gracePeriodDays = tenant.unit.gracePeriodDays;
+          const autopayWindow = getAutopayWindow(today, dueDay, gracePeriodDays);
 
-          // Check if today is within the grace period (dueDay to dueDay + gracePeriodDays)
-          if (currentDay < dueDay || currentDay > (dueDay + gracePeriodDays)) {
+          if (!autopayWindow.isWithinWindow) {
             logger.info(
-              { tenantMembershipId: tenant.id, currentDay, dueDay, gracePeriodDays },
+              { tenantMembershipId: tenant.id, currentDay, dueDay, gracePeriodDays, dueDate: autopayWindow.dueDate, graceEndDate: autopayWindow.graceEndDate },
               'Not within grace period, skipping'
             );
             result.skipped++;
             continue;
           }
 
-          // Skip if already paid this month (SUCCEEDED or PROCESSING only, not FAILED)
-          const successfulPayment = tenant.payments.find(p => p.status === 'SUCCEEDED' || p.status === 'PROCESSING');
-          if (successfulPayment) {
+          const pendingPayment = tenant.payments.find(p => p.status === 'PROCESSING' || p.status === 'PENDING');
+          if (pendingPayment) {
             logger.info(
-              { tenantMembershipId: tenant.id, month: currentMonth },
-              'Payment already exists for this month, skipping'
+              { tenantMembershipId: tenant.id, month: autopayWindow.billingMonth },
+              'Payment is already processing for this billing cycle, skipping'
             );
             result.skipped++;
             continue;
@@ -154,8 +190,20 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             'Processing autopay charge'
           );
 
+          await emailService.sendAutopayAttemptEmail({
+            email: tenant.user.notificationEmail || tenant.user.email,
+            tenantName: tenant.user.name,
+            propertyName: tenant.unit.property.name,
+            unitName: tenant.unit.name,
+            ledgerBalance: outstandingBalance.toFixed(2),
+            totalAmount: totalAmount.toFixed(2),
+            dueDate: autopayWindow.dueDate.toLocaleDateString(),
+          });
+
           // Determine payment method types based on tenant's saved payment method
           const paymentMethodTypes = paymentMethodType === 'acss_debit' ? ['acss_debit'] : ['card'];
+          const attemptDate = today.toISOString().slice(0, 10);
+          const attemptSlot = today.getHours();
 
           // Create payment intent with off_session flag
           const paymentIntent = await stripeService.createPaymentIntent({
@@ -168,7 +216,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             paymentMethodTypes, // Pass correct payment method types
             metadata: {
               tenantMembershipId: tenant.id,
-              month: currentMonth,
+              month: autopayWindow.billingMonth,
               rentAmount: outstandingBalance.toFixed(2),
               processingFee: processingFee.toFixed(2),
               ledgerBalance: outstandingBalance.toFixed(2),
@@ -176,6 +224,7 @@ export async function processAutopayCharges(): Promise<AutopayResult> {
             },
             confirm: true,
             offSession: true,
+            idempotencyKey: `autopay-${tenant.id}-${autopayWindow.billingMonth}-${attemptDate}-${attemptSlot}`,
           });
 
           if (paymentIntent.status === 'succeeded') {

@@ -277,6 +277,7 @@ class StripeService {
     metadata?: Record<string, string>;
     confirm?: boolean;
     offSession?: boolean;
+    idempotencyKey?: string;
     mandateId?: string; // Required for ACSS Debit
     paymentMethodTypes?: string[]; // NEW: Specify allowed payment method types
   }): Promise<Stripe.PaymentIntent> {
@@ -299,7 +300,7 @@ class StripeService {
         ...(params.applicationFeeAmount ? { application_fee_amount: params.applicationFeeAmount } : {}),
         // Add mandate if provided (for PAD)
         ...(params.mandateId ? { mandate: params.mandateId } : {}),
-      });
+      }, params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : undefined);
       return paymentIntent;
     } catch (error) {
       if (error instanceof Stripe.errors.StripeError) {

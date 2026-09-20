@@ -58,7 +58,7 @@ If you didn't expect this email, you can safely ignore it.
         html: `
           <h2>✅ Payment Received</h2>
           <p>Hi ${params.tenantName},</p>
-          <p>Your rent payment has been successfully processed!</p>
+          <p>Your payment has been successfully processed and applied to your ledger!</p>
           
           <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
             <h3 style="margin-top: 0;">Payment Details</h3>
@@ -95,7 +95,7 @@ Payment Received ✅
 
 Hi ${params.tenantName},
 
-Your rent payment has been successfully processed!
+Your payment has been successfully processed and applied to your ledger!
 
 Payment Details:
 Property: ${params.propertyName} - Unit ${params.unitName}
@@ -137,7 +137,7 @@ Thank you for using RentBeam!
         html: `
           <h2>⚠️ Payment Failed</h2>
           <p>Hi ${params.tenantName},</p>
-          <p>We were unable to process your ${params.isAutopay ? 'autopay' : ''} rent payment.</p>
+          <p>We were unable to process your ${params.isAutopay ? 'Autopay' : ''} ledger payment.</p>
           
           <div style="background-color: #fef2f2; padding: 20px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ef4444;">
             <h3 style="margin-top: 0; color: #991b1b;">Payment Details</h3>
@@ -164,7 +164,7 @@ Payment Failed ⚠️
 
 Hi ${params.tenantName},
 
-We were unable to process your ${params.isAutopay ? 'autopay' : ''} rent payment.
+We were unable to process your ${params.isAutopay ? 'Autopay' : ''} ledger payment.
 
 Payment Details:
 Property: ${params.propertyName} - Unit ${params.unitName}
@@ -210,7 +210,7 @@ Go to Dashboard: ${process.env.FRONTEND_URL}/tenant/dashboard
 
           <p><strong>What this means:</strong></p>
           <ul>
-            <li>Your rent will no longer be automatically charged</li>
+            <li>Your posted ledger balance will no longer be automatically charged</li>
             <li>You'll need to manually pay your rent each month</li>
             <li>Update your payment method to re-enable autopay</li>
           </ul>
@@ -230,7 +230,7 @@ Your autopay for ${params.propertyName} - Unit ${params.unitName} has been disab
 Reason: ${params.reason}
 
 What this means:
-- Your rent will no longer be automatically charged
+- Your posted ledger balance will no longer be automatically charged
 - You'll need to manually pay your rent each month
 - Update your payment method to re-enable autopay
 
@@ -241,6 +241,56 @@ Update Payment Method: ${process.env.FRONTEND_URL}/tenant/autopay
       logger.info({ email: params.email }, '📧 Autopay disabled email sent');
     } catch (error) {
       logger.error({ error, email: params.email }, 'Failed to send autopay disabled email');
+    }
+  },
+
+  async sendAutopayAttemptEmail(params: {
+    email: string;
+    tenantName: string;
+    propertyName: string;
+    unitName: string;
+    ledgerBalance: string;
+    totalAmount: string;
+    dueDate: string;
+  }): Promise<void> {
+    try {
+      await resend.emails.send({
+        from: process.env.EMAIL_FROM || 'noreply@rentbeam.ca',
+        to: params.email,
+        subject: 'Autopay Scheduled - Ledger Balance',
+        html: `
+          <h2>Autopay Scheduled</h2>
+          <p>Hi ${params.tenantName},</p>
+          <p>Your scheduled Autopay is being processed for ${params.propertyName} - Unit ${params.unitName}.</p>
+
+          <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
+            <p><strong>Posted ledger balance:</strong> $${params.ledgerBalance}</p>
+            <p><strong>Total payment including processing fee:</strong> $${params.totalAmount}</p>
+            <p><strong>Scheduled date:</strong> ${params.dueDate}</p>
+          </div>
+
+          <p>Autopay includes posted rent, fees, and adjustments on your ledger.</p>
+          <p>You will receive another email when the payment succeeds or if it needs attention.</p>
+        `,
+        text: `
+Autopay Scheduled
+
+Hi ${params.tenantName},
+
+Your scheduled Autopay is being processed for ${params.propertyName} - Unit ${params.unitName}.
+
+Posted ledger balance: $${params.ledgerBalance}
+Total payment including processing fee: $${params.totalAmount}
+Scheduled date: ${params.dueDate}
+
+Autopay includes posted rent, fees, and adjustments on your ledger.
+You will receive another email when the payment succeeds or if it needs attention.
+        `,
+      });
+
+      logger.info({ email: params.email }, '📧 Autopay attempt email sent');
+    } catch (error) {
+      logger.error({ error, email: params.email }, 'Failed to send Autopay attempt email');
     }
   },
 
@@ -369,7 +419,7 @@ If you didn't request this change, please ignore this email and your account wil
         html: `
           <h2>🔔 Rent Payment Reminder</h2>
           <p>Hi ${params.tenantName},</p>
-          <p>This is a friendly reminder that your rent payment is due in <strong>3 days</strong>.</p>
+          <p>This is a friendly reminder that your posted ledger balance is scheduled for payment in <strong>3 days</strong>.</p>
           
           <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin: 20px 0;">
             <h3 style="margin-top: 0;">Payment Details</h3>
@@ -391,7 +441,7 @@ Rent Payment Reminder 🔔
 
 Hi ${params.tenantName},
 
-This is a friendly reminder that your rent payment is due in 3 days.
+This is a friendly reminder that your posted ledger balance is scheduled for payment in 3 days.
 
 Payment Details:
 Property: ${params.propertyName} - Unit ${params.unitName}

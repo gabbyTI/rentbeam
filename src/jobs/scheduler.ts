@@ -21,8 +21,19 @@ export function initializeScheduler() {
 
   logger.info({ enableCron, baseUrl }, 'Initializing cron scheduler');
 
-  // Run autopay processing daily at 00:00 (midnight)
-  const autopayJob = cron.schedule('0 0 * * *', async () => {
+  // Post monthly ledger charges at midnight before Autopay evaluates balances.
+  const rentChargeJob = cron.schedule('0 0 * * *', async () => {
+    logger.info('Cron: Posting monthly rent charges to ledger');
+    try {
+      const result = await postMonthlyRentCharges();
+      logger.info({ result }, 'Cron: Rent charge posting complete');
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Cron: Rent charge posting failed');
+    }
+  });
+
+  // Run Autopay five minutes after rent charges are posted.
+  const autopayJob = cron.schedule('5 0 * * *', async () => {
     logger.info('Cron: Triggering autopay processing');
 
     try {
@@ -108,18 +119,7 @@ export function initializeScheduler() {
     }
   });
 
-  logger.info('Cron jobs scheduled: autopay at 00:00 and 10:00, reminders at 09:00, rent charges at 00:05 daily');
-
-  // Post monthly rent charges at 00:05 daily (just after midnight, after autopay kick-off)
-  const rentChargeJob = cron.schedule('5 0 * * *', async () => {
-    logger.info('Cron: Posting monthly rent charges to ledger');
-    try {
-      const result = await postMonthlyRentCharges();
-      logger.info({ result }, 'Cron: Rent charge posting complete');
-    } catch (error: any) {
-      logger.error({ error: error.message }, 'Cron: Rent charge posting failed');
-    }
-  });
+  logger.info('Cron jobs scheduled: rent charges at 00:00, autopay at 00:05 and 10:00, reminders at 09:00 daily');
 
   // Return jobs for potential cleanup on shutdown
   return { autopayJob, retryJob, reminderJob, rentChargeJob };

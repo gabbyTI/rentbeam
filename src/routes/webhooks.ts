@@ -201,6 +201,11 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
       where: { stripePaymentIntentId: paymentIntent.id },
     });
 
+    if (existingPayment?.status === 'SUCCEEDED') {
+      logger.info({ paymentIntentId: paymentIntent.id }, 'Payment success webhook already reconciled, skipping');
+      return;
+    }
+
     let payment;
     if (existingPayment) {
       // Update existing PROCESSING payment to SUCCEEDED
@@ -256,7 +261,7 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
     }, 'Payment record created successfully');
 
     await emailService.sendPaymentSuccessEmail({
-      email: payment.tenantMembership.user.email,
+      email: payment.tenantMembership.user.notificationEmail || payment.tenantMembership.user.email,
       tenantName: payment.tenantMembership.user.name,
       rentAmount: payment.rentAmount.toString(),
       processingFee: payment.processingFee.toString(),
@@ -432,8 +437,26 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
   const errorMessage = paymentIntent.last_payment_error?.message || 'Payment could not be processed';
 
   try {
-    await prisma.payment.create({
-      data: {
+    const existingPayment = await prisma.payment.findUnique({
+      where: { stripePaymentIntentId: paymentIntent.id },
+    });
+
+    if (existingPayment?.status === 'FAILED') {
+      logger.info({ paymentIntentId: paymentIntent.id }, 'Payment failure webhook already reconciled, skipping');
+      return;
+    }
+
+    if (existingPayment) {
+      await prisma.payment.update({
+        where: { id: existingPayment.id },
+        data: {
+          status: 'FAILED',
+          note: `Payment failed: ${errorMessage}`,
+        },
+      });
+    } else {
+      await prisma.payment.create({
+        data: {
         tenantMembershipId,
         rentAmount: parseFloat(rentAmount || '0'),
         processingFee: actualProcessingFee,
@@ -446,8 +469,9 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
         month,
         stripePaymentIntentId: paymentIntent.id,
         note: `Payment failed: ${errorMessage}`,
-      },
-    });
+        },
+      });
+    }
 
     logger.info({
       paymentIntentId: paymentIntent.id,
@@ -496,7 +520,7 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
 
       // Send autopay disabled email
       await emailService.sendAutopayDisabledEmail({
-        email: membership.user.email,
+        email: membership.user.notificationEmail || membership.user.email,
         tenantName: membership.user.name,
         reason: `Your payment method was declined 3 times. Please update your payment method and re-enable autopay.`,
         propertyName: membership.unit.property.name,
@@ -509,7 +533,7 @@ async function handlePaymentIntentFailed(paymentIntent: Stripe.PaymentIntent) {
 
   // Send failure email
   await emailService.sendPaymentFailedEmail({
-    email: membership.user.email,
+    email: membership.user.notificationEmail || membership.user.email,
     tenantName: membership.user.name,
     rentAmount: rentAmount || '0',
     errorMessage,

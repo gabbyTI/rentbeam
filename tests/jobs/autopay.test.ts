@@ -25,6 +25,13 @@ jest.mock('../../src/lib/metrics.js', () => ({
   paymentsAmountCents: { inc: jest.fn() },
 }));
 
+jest.mock('../../src/services/email.js', () => ({
+  __esModule: true,
+  emailService: {
+    sendAutopayAttemptEmail: jest.fn(),
+  },
+}));
+
 const mockCreatePaymentIntent = jest.fn();
 jest.mock('../../src/services/stripe.js', () => ({
   stripeService: {
@@ -44,7 +51,7 @@ jest.mock('../../src/services/ledger.js', () => ({
 
 import prismaMock_ from '../../src/lib/prisma.js';
 const prismaMock = prismaMock_ as unknown as DeepMockProxy<PrismaClient>;
-import { processAutopayCharges } from '../../src/jobs/autopay.js';
+import { getAutopayWindow, processAutopayCharges } from '../../src/jobs/autopay.js';
 
 beforeEach(() => {
   const { mockReset } = require('jest-mock-extended');
@@ -59,6 +66,11 @@ function makeTenant(overrides: Partial<any> = {}) {
 
   return {
     id: 'tenant-1',
+    user: {
+      name: 'Test Tenant',
+      email: 'tenant@example.com',
+      notificationEmail: 'alerts@example.com',
+    },
     autopayEnabled: true,
     status: 'ACTIVE',
     defaultPaymentMethodId: 'pm_123',
@@ -84,6 +96,28 @@ function makeTenant(overrides: Partial<any> = {}) {
 }
 
 describe('processAutopayCharges', () => {
+  it('resolves a grace period that crosses into the next month', () => {
+    const window = getAutopayWindow(new Date('2026-10-02T12:00:00'), 28, 5);
+
+    expect(window.billingMonth).toBe('2026-09');
+    expect(window.isWithinWindow).toBe(true);
+  });
+
+  it('does not treat a successful partial payment as a completed Autopay cycle', async () => {
+    prismaMock.tenantMembership.findMany.mockResolvedValue([
+      makeTenant({
+        payments: [{ status: 'SUCCEEDED' }],
+      }),
+    ] as any);
+    mockGetOutstandingBalance.mockResolvedValue(900);
+    mockCreatePaymentIntent.mockResolvedValue({ status: 'succeeded', id: 'pi_123' });
+
+    const result = await processAutopayCharges();
+
+    expect(result.succeeded).toBe(1);
+    expect(mockCreatePaymentIntent).toHaveBeenCalledTimes(1);
+  });
+
   it('skips tenants with no outstanding ledger balance', async () => {
     prismaMock.tenantMembership.findMany.mockResolvedValue([makeTenant()] as any);
     mockGetOutstandingBalance.mockResolvedValue(0);
@@ -104,6 +138,7 @@ describe('processAutopayCharges', () => {
     expect(result.succeeded).toBe(1);
     expect(mockCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({
       amount: expect.any(Number),
+      idempotencyKey: expect.stringMatching(/^autopay-tenant-1-/),
       metadata: expect.objectContaining({
         ledgerBalance: '900.00',
         rentAmount: '900.00',
