@@ -92,7 +92,7 @@ function makeEntry(overrides: Partial<{
 describe('postCharge', () => {
   it('creates a charge entry when no previous entries exist (balance starts at 0)', async () => {
     // No prior balance
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([]);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null); // no idempotency hit
     const created = makeEntry({ balanceAfter: new Prisma.Decimal(500) });
     prismaMock.ledgerEntry.create.mockResolvedValue(created as any);
@@ -143,7 +143,7 @@ describe('postCharge', () => {
   });
 
   it('sends a ledger update notification to the tenant when a charge is posted', async () => {
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([]);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     prismaMock.ledgerEntry.create.mockResolvedValue(makeEntry({ balanceAfter: new Prisma.Decimal(500) }) as any);
     prismaMock.tenantMembership.findUnique.mockResolvedValue({
@@ -184,8 +184,11 @@ describe('postCharge', () => {
 
   it('adds charge on top of existing balance', async () => {
     // Existing balance of 200 (tenant already owes 200)
-    const existing = makeEntry({ balanceAfter: new Prisma.Decimal(200) });
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(existing as any);
+    const existing = makeEntry({
+      chargeAmount: new Prisma.Decimal(200),
+      balanceAfter: new Prisma.Decimal(200),
+    });
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([existing] as any);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({ balanceAfter: new Prisma.Decimal(700) });
     prismaMock.ledgerEntry.create.mockResolvedValue(created as any);
@@ -246,8 +249,11 @@ describe('postCharge', () => {
 
 describe('postPayment', () => {
   it('creates a payment entry and reduces the balance', async () => {
-    const existingBalance = makeEntry({ balanceAfter: new Prisma.Decimal(1000) });
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(existingBalance as any);
+    const existingBalance = makeEntry({
+      chargeAmount: new Prisma.Decimal(1000),
+      balanceAfter: new Prisma.Decimal(1000),
+    });
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([existingBalance] as any);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({
       type: 'PAYMENT',
@@ -274,8 +280,11 @@ describe('postPayment', () => {
   });
 
   it('allows overpayment — balance becomes negative (credit carry-forward)', async () => {
-    const existingBalance = makeEntry({ balanceAfter: new Prisma.Decimal(500) });
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(existingBalance as any);
+    const existingBalance = makeEntry({
+      chargeAmount: new Prisma.Decimal(500),
+      balanceAfter: new Prisma.Decimal(500),
+    });
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([existingBalance] as any);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({
       type: 'PAYMENT',
@@ -299,8 +308,13 @@ describe('postPayment', () => {
 
   it('credit carry-forward: next rent charge adds on top of negative balance', async () => {
     // Balance is -100 (tenant has a $100 credit)
-    const creditBalance = makeEntry({ balanceAfter: new Prisma.Decimal(-100) });
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(creditBalance as any);
+    const creditBalance = makeEntry({
+      type: 'PAYMENT',
+      chargeAmount: null,
+      paymentAmount: new Prisma.Decimal(100),
+      balanceAfter: new Prisma.Decimal(-100),
+    });
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([creditBalance] as any);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({ balanceAfter: new Prisma.Decimal(400) });
     prismaMock.ledgerEntry.create.mockResolvedValue(created as any);
@@ -350,8 +364,11 @@ describe('postPayment', () => {
 
 describe('postCredit', () => {
   it('reduces the balance by the credit amount', async () => {
-    const existingBalance = makeEntry({ balanceAfter: new Prisma.Decimal(500) });
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(existingBalance as any);
+    const existingBalance = makeEntry({
+      chargeAmount: new Prisma.Decimal(500),
+      balanceAfter: new Prisma.Decimal(500),
+    });
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([existingBalance] as any);
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({
       type: 'CREDIT',
@@ -378,7 +395,7 @@ describe('postCredit', () => {
   });
 
   it('concession on zero balance creates a credit (negative balance)', async () => {
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(null); // balance = 0
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([]); // balance = 0
     prismaMock.ledgerEntry.findUnique.mockResolvedValue(null);
     const created = makeEntry({
       type: 'CREDIT',
@@ -416,27 +433,36 @@ describe('postCredit', () => {
 
 describe('getCurrentBalance', () => {
   it('returns 0 when there are no ledger entries', async () => {
-    prismaMock.ledgerEntry.findFirst.mockResolvedValue(null);
+    prismaMock.ledgerEntry.findMany.mockResolvedValue([]);
     const balance = await getCurrentBalance(MEMBERSHIP_ID);
     expect(balance).toBe(0);
   });
 
-  it('returns the balanceAfter of the most recent POSTED entry', async () => {
-    const lastEntry = makeEntry({ balanceAfter: new Prisma.Decimal(1234.56) });
-    // findFirst called twice: once to check if any exist, once for last
-    prismaMock.ledgerEntry.findFirst
-      .mockResolvedValueOnce(lastEntry as any)  // first call: exists check
-      .mockResolvedValueOnce(lastEntry as any); // second call: get latest
+  it('calculates the balance from all posted entries', async () => {
+    const entries = [
+      makeEntry({ chargeAmount: new Prisma.Decimal(1500) }),
+      makeEntry({
+        type: 'PAYMENT',
+        chargeAmount: null,
+        paymentAmount: new Prisma.Decimal(265.44),
+      }),
+    ];
+    prismaMock.ledgerEntry.findMany.mockResolvedValue(entries as any);
 
     const balance = await getCurrentBalance(MEMBERSHIP_ID);
     expect(balance).toBe(1234.56);
   });
 
   it('returns negative balance (credit) when tenant has overpaid', async () => {
-    const creditEntry = makeEntry({ balanceAfter: new Prisma.Decimal(-150) });
-    prismaMock.ledgerEntry.findFirst
-      .mockResolvedValueOnce(creditEntry as any)
-      .mockResolvedValueOnce(creditEntry as any);
+    const entries = [
+      makeEntry({ chargeAmount: new Prisma.Decimal(500) }),
+      makeEntry({
+        type: 'PAYMENT',
+        chargeAmount: null,
+        paymentAmount: new Prisma.Decimal(650),
+      }),
+    ];
+    prismaMock.ledgerEntry.findMany.mockResolvedValue(entries as any);
 
     const balance = await getCurrentBalance(MEMBERSHIP_ID);
     expect(balance).toBe(-150);
@@ -468,6 +494,37 @@ describe('getStatement', () => {
     expect(rows[1].balanceAfter).toBe(400);
     expect(rows[0].chargeAmount).toBe(1000);
     expect(rows[1].paymentAmount).toBe(600);
+  });
+
+  it('uses posting order for running balances when an entry is backdated', async () => {
+    const postedEntries = [
+      makeEntry({
+        id: 'initial-charge',
+        effectiveDate: new Date('2026-09-19'),
+        createdAt: new Date('2026-09-20T10:00:00Z'),
+        chargeAmount: new Prisma.Decimal(100),
+      }),
+      makeEntry({
+        id: 'payment',
+        effectiveDate: new Date('2026-09-20'),
+        createdAt: new Date('2026-09-20T10:05:00Z'),
+        type: 'PAYMENT',
+        chargeAmount: null,
+        paymentAmount: new Prisma.Decimal(100),
+      }),
+      makeEntry({
+        id: 'backdated-charge',
+        effectiveDate: new Date('2026-09-19'),
+        createdAt: new Date('2026-09-20T10:10:00Z'),
+        chargeAmount: new Prisma.Decimal(30),
+      }),
+    ];
+    prismaMock.ledgerEntry.findMany.mockResolvedValue(postedEntries as any);
+
+    const rows = await getStatement(MEMBERSHIP_ID);
+
+    expect(rows.map((row) => row.id)).toEqual(['initial-charge', 'payment', 'backdated-charge']);
+    expect(rows.map((row) => row.balanceAfter)).toEqual([100, 0, 30]);
   });
 
   it('queries only POSTED entries by default', async () => {
@@ -562,16 +619,66 @@ describe('getLedgerSummary', () => {
     const entries = [
       makeEntry({
         id: 'e1',
+        chargeAmount: new Prisma.Decimal(500),
+        paymentAmount: null,
+        effectiveDate: new Date('2026-07-03'),
+      }),
+      makeEntry({
+        id: 'e2',
         type: 'PAYMENT',
         chargeAmount: null,
         paymentAmount: new Prisma.Decimal(600),
-        balanceAfter: new Prisma.Decimal(-100), // overpaid
-        effectiveDate: new Date('2026-07-03'),
+        balanceAfter: new Prisma.Decimal(-100), // stored value is ignored
+        effectiveDate: new Date('2026-07-04'),
       }),
     ];
     prismaMock.ledgerEntry.findMany.mockResolvedValue(entries as any);
 
     const summary = await getLedgerSummary(MEMBERSHIP_ID);
     expect(summary.currentBalance).toBe(-100);
+  });
+
+  it('calculates the current balance when charges are backdated after a payment', async () => {
+    const entries = [
+      makeEntry({
+        id: 'rent',
+        effectiveDate: new Date('2026-09-19'),
+        chargeAmount: new Prisma.Decimal(100),
+      }),
+      makeEntry({
+        id: 'payment',
+        effectiveDate: new Date('2026-09-20'),
+        type: 'PAYMENT',
+        chargeAmount: null,
+        paymentAmount: new Prisma.Decimal(103.20),
+      }),
+      makeEntry({
+        id: 'damages',
+        effectiveDate: new Date('2026-09-19'),
+        chargeAmount: new Prisma.Decimal(100),
+      }),
+      makeEntry({
+        id: 'heat',
+        effectiveDate: new Date('2026-09-19'),
+        chargeAmount: new Prisma.Decimal(30),
+      }),
+      makeEntry({
+        id: 'water',
+        effectiveDate: new Date('2026-09-19'),
+        chargeAmount: new Prisma.Decimal(20),
+      }),
+      makeEntry({
+        id: 'fridge',
+        effectiveDate: new Date('2026-09-19'),
+        chargeAmount: new Prisma.Decimal(70),
+      }),
+    ];
+    prismaMock.ledgerEntry.findMany.mockResolvedValue(entries as any);
+
+    const summary = await getLedgerSummary(MEMBERSHIP_ID);
+    const outstanding = await getOutstandingBalance(MEMBERSHIP_ID);
+
+    expect(summary.currentBalance).toBe(216.8);
+    expect(outstanding).toBe(216.8);
   });
 });

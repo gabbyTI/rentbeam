@@ -66,33 +66,29 @@ export interface LedgerSummary {
  * Returns 0 if no entries exist yet.
  */
 async function getLastPostedBalance(tenantMembershipId: string): Promise<number> {
-  const last = await prisma.ledgerEntry.findFirst({
+  const entries = await prisma.ledgerEntry.findMany({
     where: {
       tenantMembershipId,
       status: 'POSTED',
     },
-    orderBy: [
-      { effectiveDate: 'asc' },
-      { createdAt: 'asc' },
-    ],
-    // Get the very last one
+    orderBy: [{ createdAt: 'asc' }, { effectiveDate: 'asc' }],
   });
 
-  if (!last) return 0;
+  return calculateBalance(entries);
+}
 
-  // Find the true last posted entry
-  const lastPosted = await prisma.ledgerEntry.findFirst({
-    where: {
-      tenantMembershipId,
-      status: 'POSTED',
-    },
-    orderBy: [
-      { effectiveDate: 'desc' },
-      { createdAt: 'desc' },
-    ],
-  });
-
-  return lastPosted ? Number(lastPosted.balanceAfter) : 0;
+function calculateBalance(entries: Array<{
+  type: string;
+  chargeAmount: Prisma.Decimal | null;
+  paymentAmount: Prisma.Decimal | null;
+}>): number {
+  return entries.reduce((balance, entry) => {
+    if (entry.type === 'CHARGE') return balance + Number(entry.chargeAmount ?? 0);
+    if (entry.type === 'PAYMENT' || entry.type === 'CREDIT') {
+      return balance - Number(entry.paymentAmount ?? 0);
+    }
+    return balance;
+  }, 0);
 }
 
 // ─── Core Service ─────────────────────────────────────────────────────────────
@@ -315,7 +311,12 @@ async function notifyTenantOfLedgerEntry(params: {
  * Negative = tenant has a credit.
  */
 export async function getCurrentBalance(tenantMembershipId: string): Promise<number> {
-  return getLastPostedBalance(tenantMembershipId);
+  const entries = await prisma.ledgerEntry.findMany({
+    where: { tenantMembershipId, status: 'POSTED' },
+    orderBy: [{ effectiveDate: 'asc' }, { createdAt: 'asc' }],
+  });
+
+  return calculateBalance(entries);
 }
 
 /**
@@ -325,21 +326,17 @@ export async function getCurrentBalance(tenantMembershipId: string): Promise<num
 export async function getOutstandingBalance(tenantMembershipId: string): Promise<number> {
   const entries = await prisma.ledgerEntry.findMany({
     where: { tenantMembershipId, status: 'POSTED' },
+    orderBy: [{ effectiveDate: 'asc' }, { createdAt: 'asc' }],
   });
 
-  const latestEntry = [...entries].sort((a, b) => {
-    const effectiveDiff = new Date(b.effectiveDate).getTime() - new Date(a.effectiveDate).getTime();
-    if (effectiveDiff !== 0) return effectiveDiff;
-    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-  })[0];
-
-  const currentBalance = latestEntry ? Number(latestEntry.balanceAfter) : 0;
+  const currentBalance = calculateBalance(entries);
   return Math.max(currentBalance, 0);
 }
 
 /**
  * Get the full ledger statement for a tenant.
- * Returns all POSTED entries ordered by effectiveDate ASC, createdAt ASC.
+ * Returns all POSTED entries ordered by posting time ASC.
+ * effectiveDate remains the accounting date displayed on each row.
  * Pending entries excluded from statement by default.
  */
 export async function getStatement(
@@ -363,10 +360,15 @@ export async function getStatement(
           }
         : {}),
     },
-    orderBy: [{ effectiveDate: 'asc' }, { createdAt: 'asc' }],
+    orderBy: [{ createdAt: 'asc' }, { effectiveDate: 'asc' }],
   });
 
-  return entries.map((e) => ({
+  let runningBalance = 0;
+  return entries.map((e) => {
+    if (e.type === 'CHARGE') runningBalance += Number(e.chargeAmount ?? 0);
+    if (e.type === 'PAYMENT' || e.type === 'CREDIT') runningBalance -= Number(e.paymentAmount ?? 0);
+
+    return {
     id: e.id,
     effectiveDate: e.effectiveDate,
     type: e.type,
@@ -376,10 +378,11 @@ export async function getStatement(
     description: e.description,
     chargeAmount: e.chargeAmount ? Number(e.chargeAmount) : null,
     paymentAmount: e.paymentAmount ? Number(e.paymentAmount) : null,
-    balanceAfter: Number(e.balanceAfter),
+    balanceAfter: runningBalance,
     referenceId: e.referenceId,
     createdAt: e.createdAt,
-  }));
+    };
+  });
 }
 
 /**
@@ -395,8 +398,11 @@ export async function getLedgerSummary(tenantMembershipId: string): Promise<Ledg
     return { currentBalance: 0, lastPostedDate: null, totalCharged: 0, totalPaid: 0 };
   }
 
-  const currentBalance = Number(entries[0].balanceAfter);
-  const lastPostedDate = entries[0].effectiveDate;
+  const currentBalance = calculateBalance(entries);
+  const lastPostedDate = entries.reduce(
+    (latest, entry) => entry.createdAt > latest.createdAt ? entry : latest,
+    entries[0]
+  ).effectiveDate;
 
   const totalCharged = entries
     .filter((e) => e.type === 'CHARGE')
