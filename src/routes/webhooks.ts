@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { stripeService } from '../services/stripe.js';
 import { emailService } from '../services/email.js';
-import { postPayment as postLedgerPayment } from '../services/ledger.js';
+import { postCharge as postLedgerCharge, postPayment as postLedgerPayment } from '../services/ledger.js';
 import prisma from '../lib/prisma.js';
 import logger from '../lib/logger.js';
 import Stripe from 'stripe';
@@ -268,10 +268,25 @@ async function handlePaymentIntentSucceeded(paymentIntent: Stripe.PaymentIntent)
 
     logger.info({ paymentId: payment.id }, 'Payment success email sent');
 
-    // Post payment to ledger (idempotent — skips if paymentIntentId already recorded)
+    // Post fee + payment to ledger (idempotent by distinct reference IDs)
+    // Tenant liability model: fee is a separate CHARGE row, payment is full collected amount.
     try {
       const totalPaid = Number(payment.totalAmount);
+      const feeAmount = Number(payment.processingFee || 0);
       const isAutopay = autopay === 'true';
+
+      if (feeAmount > 0) {
+        await postLedgerCharge({
+          tenantMembershipId,
+          effectiveDate: payment.date,
+          code: 'FEE',
+          description: isAutopay ? 'Card Processing Fee (Autopay)' : 'Card Processing Fee',
+          amount: feeAmount,
+          source: 'STRIPE',
+          referenceId: `FEE-STRIPE-${paymentIntent.id}`,
+        });
+      }
+
       await postLedgerPayment({
         tenantMembershipId,
         effectiveDate: payment.date,

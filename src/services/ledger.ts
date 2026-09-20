@@ -10,7 +10,7 @@ export interface PostChargeParams {
   code: string;               // e.g. RNTA, FEE, CONC, DEPO, ADJ
   description: string;
   amount: number;
-  source?: 'SYSTEM' | 'MANUAL';
+  source?: 'SYSTEM' | 'MANUAL' | 'STRIPE';
   referenceId?: string;       // idempotency key — if supplied, skip if already exists
   postedBy?: string;          // userId of landlord
 }
