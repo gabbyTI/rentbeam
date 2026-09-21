@@ -208,3 +208,84 @@ describe('POST /api/tenants', () => {
     expect(res.body.data.openingBalance).toBe(650);
   });
 });
+
+describe('POST /api/tenants/transfer', () => {
+  const oldMembership = {
+    id: 'membership-1',
+    userId: 'tenant-user-1',
+    landlordId: 'landlord-1',
+    unitId: 'unit-old',
+    status: 'ACTIVE',
+    unit: { id: 'unit-old' },
+  };
+
+  const newUnit = {
+    id: 'unit-new',
+    property: { landlordId: 'landlord-1' },
+  };
+
+  it('updates the existing membership and preserves its id', async () => {
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+    prismaMock.tenantMembership.findUnique.mockResolvedValue(oldMembership as any);
+    prismaMock.unit.findUnique.mockResolvedValue(newUnit as any);
+    prismaMock.tenantMembership.findFirst.mockResolvedValue(null);
+    prismaMock.tenantMembership.update.mockResolvedValue({
+      ...oldMembership,
+      unitId: 'unit-new',
+      unit: newUnit,
+    } as any);
+    prismaMock.$transaction.mockImplementation(async (callback: any) => callback(prismaMock as any));
+
+    const res = await request(buildApp())
+      .post('/api/tenants/transfer')
+      .send({ tenantId: 'membership-1', newUnitId: 'unit-new' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.id).toBe('membership-1');
+    expect(res.body.data.unitId).toBe('unit-new');
+    expect(prismaMock.tenantMembership.create).not.toHaveBeenCalled();
+    expect(prismaMock.tenantMembership.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'membership-1' },
+      data: { unitId: 'unit-new' },
+    }));
+  });
+
+  it('rejects a destination unit owned by another landlord', async () => {
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+    prismaMock.tenantMembership.findUnique.mockResolvedValue(oldMembership as any);
+    prismaMock.unit.findUnique.mockResolvedValue({
+      ...newUnit,
+      property: { landlordId: 'landlord-2' },
+    } as any);
+
+    const res = await request(buildApp())
+      .post('/api/tenants/transfer')
+      .send({ tenantId: 'membership-1', newUnitId: 'unit-new' });
+
+    expect(res.status).toBe(403);
+    expect(prismaMock.tenantMembership.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects a destination unit with another active tenant', async () => {
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+    prismaMock.tenantMembership.findUnique.mockResolvedValue(oldMembership as any);
+    prismaMock.unit.findUnique.mockResolvedValue(newUnit as any);
+    prismaMock.tenantMembership.findFirst.mockResolvedValue({ id: 'other-membership' } as any);
+
+    const res = await request(buildApp())
+      .post('/api/tenants/transfer')
+      .send({ tenantId: 'membership-1', newUnitId: 'unit-new' });
+
+    expect(res.status).toBe(400);
+    expect(prismaMock.tenantMembership.update).not.toHaveBeenCalled();
+  });
+});

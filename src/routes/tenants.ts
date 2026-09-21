@@ -703,51 +703,77 @@ router.delete('/:id', catchAsync(async (req: AuthRequest, res) => {
 
 // POST /api/tenants/transfer (transfer tenant to new unit)
 router.post('/transfer', catchAsync(async (req: AuthRequest, res) => {
+  const user = req.user!;
   const { tenantId, newUnitId } = req.body;
 
   if (!tenantId || !newUnitId) {
     throw new ValidationError('Missing required fields');
   }
 
+  const landlord = await prisma.landlordAccount.findUnique({
+    where: { userId: user.id },
+  });
+
+  if (!landlord) {
+    throw new ForbiddenError('Not authorized');
+  }
+
   const oldMembership = await prisma.tenantMembership.findUnique({
     where: { id: tenantId },
-    include: { unit: true }
+    include: { unit: true },
   });
 
   if (!oldMembership) {
     throw new NotFoundError('Tenant not found');
   }
 
+  if (oldMembership.landlordId !== landlord.id) {
+    throw new ForbiddenError('You do not manage this tenant');
+  }
+
+  if (oldMembership.status !== 'ACTIVE') {
+    throw new ValidationError('Only active tenants can be transferred');
+  }
+
+  if (oldMembership.unitId === newUnitId) {
+    throw new ValidationError('Tenant is already assigned to this unit');
+  }
+
   const newUnit = await prisma.unit.findUnique({
-    where: { id: newUnitId }
+    where: { id: newUnitId },
+    include: { property: true },
   });
 
   if (!newUnit) {
     throw new NotFoundError('Unit not found');
   }
 
-  // Mark old membership as inactive
-  await prisma.tenantMembership.update({
-    where: { id: tenantId },
-    data: {
-      status: 'INACTIVE',
-      moveOutDate: new Date()
-    }
-  });
+  if (newUnit.property.landlordId !== landlord.id) {
+    throw new ForbiddenError('You do not own this unit');
+  }
 
-  // Create new membership
-  const newMembership = await prisma.tenantMembership.create({
-    data: {
-      userId: oldMembership.userId,
+  const existingActiveTenant = await prisma.tenantMembership.findFirst({
+    where: {
       unitId: newUnitId,
-      landlordId: oldMembership.landlordId,
-      moveInDate: new Date(),
-      inviteStatus: 'ACCEPTED',
-      status: 'ACTIVE'
-    }
+      status: 'ACTIVE',
+      id: { not: tenantId },
+    },
   });
 
-  res.json(apiResponse(newMembership, 'Tenant transferred successfully'));
+  if (existingActiveTenant) {
+    throw new ValidationError('This unit already has an active tenant');
+  }
+
+  const updatedMembership = await prisma.$transaction((tx) => tx.tenantMembership.update({
+    where: { id: tenantId },
+    data: { unitId: newUnitId },
+    include: {
+      user: true,
+      unit: { include: { property: true } },
+    },
+  }));
+
+  res.json(apiResponse(updatedMembership, 'Tenant transferred successfully'));
 }));
 
 // PATCH /api/tenants/:id/autopay (toggle autopay)
