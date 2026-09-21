@@ -150,6 +150,26 @@ describe('POST /api/tenants', () => {
     expect(res.body.data.openingBalance).toBe(0);
   });
 
+  it('skips the invite when sendInvite is false', async () => {
+    mockCreateHappyPath();
+
+    const res = await request(buildApp())
+      .post('/api/tenants')
+      .send({
+        email: 'tenant@example.com',
+        firstName: 'John',
+        lastName: 'Doe',
+        unitId: 'unit-1',
+        moveInDate: '2026-07-12',
+        sendInvite: false,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockSendTenantInvite).not.toHaveBeenCalled();
+    expect(mockInvitesInc).not.toHaveBeenCalled();
+    expect(res.body.data.inviteSent).toBe(false);
+  });
+
   it('posts optional opening ledger entries in CHARGE -> CREDIT -> PAYMENT order', async () => {
     mockCreateHappyPath();
     mockPostCharge.mockResolvedValue({ id: 'lc-1' });

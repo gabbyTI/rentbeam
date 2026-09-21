@@ -124,6 +124,7 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const {
     email, firstName, lastName, phone, unitId, moveInDate,
+    sendInvite = true,
     // New profile fields (all optional)
     leaseStartDate, leaseEndDate, leaseType,
     rentDeposit, dateOfBirth,
@@ -244,24 +245,31 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
     }
   });
 
-  // Send invite email
-  try {
-    await emailService.sendTenantInvite(email, user.name, inviteToken);
-  } catch (error) {
-    logger.error({ error, email }, 'Failed to send invite email, but tenant was created');
-    // Don't fail the request if email fails - tenant is still created
+  let inviteSent = false;
+
+  if (sendInvite !== false) {
+    try {
+      await emailService.sendTenantInvite(email, user.name, inviteToken);
+      inviteSent = true;
+    } catch (error) {
+      logger.error({ error, email }, 'Failed to send invite email, but tenant was created');
+      // Don't fail the request if email fails - tenant is still created
+    }
   }
 
   logger.info({
     tenantId: membership.id,
     email,
     unitId,
-    landlordId: landlord.id
-  }, 'Tenant created and invite sent');
+    landlordId: landlord.id,
+    inviteSent,
+  }, inviteSent ? 'Tenant created and invite sent' : 'Tenant created without sending invite');
 
-  // Record metrics
-  invitesTotal.inc({ status: 'sent' });
-  await updateTenantMetrics(prisma);
+  // Record metrics only when we actually send an invite
+  if (inviteSent) {
+    invitesTotal.inc({ status: 'sent' });
+    await updateTenantMetrics(prisma);
+  }
 
   // Optional opening ledger entries (tenant creation can seed a real opening balance)
   // Posting order is deterministic so resulting balance is predictable:
@@ -321,7 +329,8 @@ router.post('/', catchAsync(async (req: AuthRequest, res) => {
 
   res.status(201).json(apiResponse({
     membership,
-    inviteLink: `${process.env.FRONTEND_URL}/invite/${inviteToken}`,
+    inviteSent,
+    inviteLink: inviteSent ? `${process.env.FRONTEND_URL}/invite/${inviteToken}` : null,
     openingLedgerEntriesPosted: orderedEntries.length,
     openingBalance,
   }, 'Tenant created successfully'));
