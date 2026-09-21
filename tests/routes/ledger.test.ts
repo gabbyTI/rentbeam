@@ -112,6 +112,53 @@ describe('GET /api/ledger/:id', () => {
     expect(res.body.data[0].balanceAfter).toBe(1000);
   });
 
+  it('downloads a CSV statement for an authorized tenant', async () => {
+    mockLandlordAccess();
+    prismaMock.tenantMembership.findUnique.mockResolvedValue({
+      id: MEMBERSHIP_ID,
+      userId: 'user-tenant-1',
+      landlordId: 'landlord-1',
+      user: { name: 'Jane Doe' },
+      unit: { id: 'unit-1', property: {} },
+    } as any);
+    mockGetStatement.mockResolvedValue([
+      {
+        effectiveDate: new Date('2026-09-01T12:00:00Z'),
+        type: 'CHARGE',
+        code: 'RNTA',
+        description: 'Monthly, rent',
+        chargeAmount: 900,
+        paymentAmount: null,
+        balanceAfter: 900,
+        source: 'SYSTEM',
+        referenceId: null,
+      },
+    ]);
+
+    const res = await request(buildApp())
+      .get(`/api/ledger/${MEMBERSHIP_ID}/export?fromDate=2026-09-01&toDate=2026-09-30`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.headers['content-disposition']).toContain('jane-doe');
+    expect(res.text).toContain('Date,Type,Code,Description,Charge,Payment / Credit,Balance,Source,Reference');
+    expect(res.text).toContain('"Monthly, rent"');
+    expect(mockGetStatement).toHaveBeenCalledWith(MEMBERSHIP_ID, expect.objectContaining({
+      fromDate: expect.any(Date),
+      toDate: expect.any(Date),
+    }));
+  });
+
+  it('rejects an invalid export date range', async () => {
+    mockLandlordAccess();
+
+    const res = await request(buildApp())
+      .get(`/api/ledger/${MEMBERSHIP_ID}/export?fromDate=2026-10-01&toDate=2026-09-01`);
+
+    expect(res.status).toBe(400);
+    expect(mockGetStatement).not.toHaveBeenCalled();
+  });
+
   it('returns the statement for a tenant viewing their own ledger', async () => {
     mockTenantAccess();
     mockGetStatement.mockResolvedValue([]);
@@ -139,6 +186,64 @@ describe('GET /api/ledger/:id', () => {
 
     const res = await request(buildApp()).get(`/api/ledger/${MEMBERSHIP_ID}`);
     expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/ledger/export', () => {
+  it('exports active tenant ledgers for the authenticated landlord', async () => {
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+    prismaMock.tenantMembership.findMany.mockResolvedValue([
+      {
+        id: 'membership-1',
+        user: { name: 'Jane Doe' },
+        unit: { name: 'Unit 1', property: { name: 'Main Street' } },
+      },
+    ] as any);
+    mockGetStatement.mockResolvedValue([
+      {
+        effectiveDate: new Date('2026-09-01T12:00:00Z'),
+        type: 'PAYMENT',
+        code: null,
+        description: 'Interac, transfer',
+        chargeAmount: null,
+        paymentAmount: 900,
+        balanceAfter: 0,
+        source: 'MANUAL',
+        referenceId: null,
+      },
+    ]);
+
+    const res = await request(buildApp())
+      .get('/api/ledger/export?propertyId=property-1&type=PAYMENT');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/csv');
+    expect(res.text).toContain('Tenant,Property,Unit,Date,Type,Code,Description,Charge,Payment / Credit,Balance,Source,Reference');
+    expect(res.text).toContain('Jane Doe,Main Street,Unit 1');
+    expect(res.text).toContain('"Interac, transfer"');
+    expect(prismaMock.tenantMembership.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        landlordId: 'landlord-1',
+        status: 'ACTIVE',
+        unit: { propertyId: 'property-1' },
+      }),
+    }));
+    expect(mockGetStatement).toHaveBeenCalledWith('membership-1', expect.any(Object));
+  });
+
+  it('rejects unsupported entry types', async () => {
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+
+    const res = await request(buildApp()).get('/api/ledger/export?type=REFUND');
+
+    expect(res.status).toBe(400);
+    expect(prismaMock.tenantMembership.findMany).not.toHaveBeenCalled();
   });
 });
 
