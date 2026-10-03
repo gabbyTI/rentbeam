@@ -5,6 +5,7 @@ import { ForbiddenError, ValidationError, NotFoundError } from '../lib/errors.js
 import { catchAsync } from '../utils/catchAsync.js';
 import { apiResponse } from '../utils/apiResponse.js';
 import { parsePagination, parseSort, buildPaginationResult } from '../utils/pagination.js';
+import { generateRecurringUnitChargesForDate } from '../services/recurringCharges.js';
 
 const router = Router();
 
@@ -157,7 +158,7 @@ router.post('/:id/recurring-charges', catchAsync(async (req: AuthRequest, res) =
     throw new ValidationError('frequency must be MONTHLY or WEEKLY');
   }
 
-  const parsedDueDay = Number(dueDay ?? 1);
+  const parsedDueDay = Number(dueDay ?? (normalizedFrequency === 'MONTHLY' ? unit.dueDay : 1));
   if (!Number.isInteger(parsedDueDay) || parsedDueDay < 1 || parsedDueDay > 31) {
     throw new ValidationError('dueDay must be an integer from 1 to 31');
   }
@@ -189,6 +190,10 @@ router.post('/:id/recurring-charges', catchAsync(async (req: AuthRequest, res) =
     },
     include: { chargeType: true },
   });
+
+  if (rule.active && rule.frequency === 'MONTHLY' && rule.effectiveDate <= new Date()) {
+    await generateRecurringUnitChargesForDate(new Date(), rule.id);
+  }
 
   res.status(201).json(apiResponse(rule, 'Recurring charge created successfully'));
 }));

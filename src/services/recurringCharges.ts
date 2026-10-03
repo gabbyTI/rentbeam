@@ -24,6 +24,15 @@ export interface ShouldGenerateInput {
   dueDay: number;
 }
 
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function getMonthlyDueDate(year: number, month: number, dueDay: number): Date {
+  const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(Math.max(dueDay, 1), lastDayOfMonth)));
+}
+
 function getInclusiveDayCount(start: Date, end: Date): number {
   const startUtc = Date.UTC(
     start.getUTCFullYear(),
@@ -83,22 +92,23 @@ export function getBillingPeriodWindow({
     return { start, end };
   }
 
-  const start = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
-  const end = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
-
-  const normalizedDueDay = Math.min(Math.max(dueDay, 1), 31);
-  const periodStart = new Date(start);
-  periodStart.setUTCDate(normalizedDueDay <= 1 ? 1 : 1);
-
-  if (normalizedDueDay > 1) {
-    const nextMonth = new Date(Date.UTC(year, month + 1, 1, 0, 0, 0, 0));
-    const nextBillingDate = new Date(Date.UTC(year, month, normalizedDueDay, 0, 0, 0, 0));
-    if (nextBillingDate > end) {
-      return { start: new Date(Date.UTC(year, month, 1, 0, 0, 0, 0)), end };
-    }
+  let start = getMonthlyDueDate(year, month, dueDay);
+  if (start > startOfUtcDay(utcDate)) {
+    start = getMonthlyDueDate(year, month - 1, dueDay);
   }
 
+  const nextStart = getMonthlyDueDate(start.getUTCFullYear(), start.getUTCMonth() + 1, dueDay);
+  const end = new Date(nextStart.getTime() - 1);
+
   return { start, end };
+}
+
+function isMonthlyDueDate(date: Date, dueDay: number): boolean {
+  return date.getUTCDate() === getMonthlyDueDate(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    dueDay,
+  ).getUTCDate();
 }
 
 export function shouldGenerateRecurringCharge({
@@ -145,17 +155,22 @@ export function getRuleChargeAmount({
   return Number(proratedAmount.toFixed(2));
 }
 
-export async function generateRecurringUnitChargesForDate(date: Date) {
+export async function generateRecurringUnitChargesForDate(date: Date, ruleId?: string) {
   const activeRules = await prisma.unitRecurringChargeRule.findMany({
     where: {
       active: true,
       effectiveDate: { lte: date },
+      ...(ruleId ? { id: ruleId } : {}),
     },
     include: {
       unit: {
         include: {
           tenantMemberships: {
-            where: { status: 'ACTIVE', moveInDate: { lte: date }, OR: [{ moveOutDate: null }, { moveOutDate: { gt: date } }] },
+            where: {
+              status: 'ACTIVE',
+              moveInDate: { lte: date },
+              OR: [{ moveOutDate: null }, { moveOutDate: { gt: date } }],
+            },
           },
         },
       },
@@ -164,30 +179,74 @@ export async function generateRecurringUnitChargesForDate(date: Date) {
   });
 
   const generated: Array<{ id: string; tenantMembershipId: string; amount: number; effectiveDate: Date }> = [];
+  const errors: Array<{ ruleId: string; error: string }> = [];
 
   for (const rule of activeRules) {
     try {
-      const todayDate = new Date(date);
-      const shouldGenerate = shouldGenerateRecurringCharge({
-        ruleStartDate: new Date(rule.effectiveDate),
-        ruleEndDate: rule.endDate ? new Date(rule.endDate) : null,
-        isActive: rule.active,
-        today: todayDate,
-        dueDay: rule.dueDay,
-      });
-
-      if (!shouldGenerate) continue;
+      const todayDate = startOfUtcDay(date);
+      const ruleStartDate = startOfUtcDay(new Date(rule.effectiveDate));
+      const ruleEndDate = rule.endDate ? startOfUtcDay(new Date(rule.endDate)) : null;
+      if (!rule.active || todayDate < ruleStartDate || (ruleEndDate && todayDate > ruleEndDate)) continue;
 
       const activeTenant = rule.unit.tenantMemberships[0];
       if (!activeTenant) continue;
 
-      const effectiveDate = new Date(todayDate);
-      const ruleAmount = getRuleChargeAmount({
-        amount: Number(rule.amount),
-        effectiveDate,
-        dueDay: rule.dueDay,
-        frequency: rule.frequency,
-      });
+      const amount = Number(rule.amount);
+      let effectiveDate: Date;
+      let ruleAmount: number;
+      let referenceId: string;
+
+      if (rule.frequency === 'MONTHLY') {
+        const unitDueDay = rule.unit.dueDay;
+        const currentWindow = getBillingPeriodWindow({
+          date: todayDate,
+          dueDay: unitDueDay,
+          frequency: 'MONTHLY',
+        });
+        const effectiveWindow = getBillingPeriodWindow({
+          date: ruleStartDate,
+          dueDay: unitDueDay,
+          frequency: 'MONTHLY',
+        });
+        const isInitialCycle = currentWindow.start.getTime() === effectiveWindow.start.getTime();
+        const isDueDate = isMonthlyDueDate(todayDate, unitDueDay);
+        if (!isInitialCycle && !isDueDate) continue;
+
+        const chargeStart = new Date(Math.max(
+          ruleStartDate.getTime(),
+          startOfUtcDay(new Date(activeTenant.moveInDate)).getTime(),
+        ));
+        if (chargeStart > currentWindow.end) continue;
+
+        effectiveDate = isInitialCycle ? chargeStart : todayDate;
+        ruleAmount = isInitialCycle
+          ? calculateProratedChargeAmount({
+              amount,
+              effectiveDate,
+              periodStart: currentWindow.start,
+              periodEnd: currentWindow.end,
+            })
+          : amount;
+        referenceId = `RC-${rule.id}-${activeTenant.id}-${currentWindow.start.toISOString().slice(0, 10)}`;
+      } else {
+        const shouldGenerate = shouldGenerateRecurringCharge({
+          ruleStartDate,
+          ruleEndDate,
+          isActive: rule.active,
+          today: date,
+          dueDay: rule.dueDay,
+        });
+        if (!shouldGenerate) continue;
+
+        effectiveDate = todayDate;
+        ruleAmount = getRuleChargeAmount({
+          amount,
+          effectiveDate,
+          dueDay: rule.dueDay,
+          frequency: rule.frequency,
+        });
+        referenceId = `RC-${rule.id}-${effectiveDate.toISOString().slice(0, 10)}`;
+      }
 
       if (ruleAmount <= 0) continue;
 
@@ -198,7 +257,7 @@ export async function generateRecurringUnitChargesForDate(date: Date) {
         description: rule.description || rule.chargeType.name,
         amount: ruleAmount,
         source: 'SYSTEM',
-        referenceId: `RC-${rule.id}-${effectiveDate.toISOString().slice(0, 10)}`,
+        referenceId,
       });
 
       generated.push({
@@ -215,9 +274,10 @@ export async function generateRecurringUnitChargesForDate(date: Date) {
 
       logger.info({ ruleId: rule.id, tenantMembershipId: activeTenant.id, amount: ruleAmount }, 'Generated recurring charge from unit rule');
     } catch (error: any) {
+      errors.push({ ruleId: rule.id, error: error.message });
       logger.error({ error: error.message, ruleId: rule.id }, 'Failed to generate recurring charge');
     }
   }
 
-  return { generated };
+  return { generated, errors };
 }
