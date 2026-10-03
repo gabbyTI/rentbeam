@@ -209,6 +209,102 @@ describe('POST /api/tenants', () => {
   });
 });
 
+describe('PATCH /api/tenants/:id/user-info', () => {
+  const validEdit = {
+    firstName: 'Jane',
+    lastName: 'Smith',
+    phone: null,
+    leaseStartDate: '2026-01-01',
+    leaseEndDate: null,
+    leaseType: 'MONTH_TO_MONTH',
+    rentDeposit: null,
+    dateOfBirth: null,
+    emergencyContactName: null,
+    emergencyContactPhone: null,
+    notes: null,
+  };
+
+  it('updates contact and lease/profile details together and allows clearing optional fields', async () => {
+    prismaMock.tenantMembership.findUnique.mockResolvedValue({
+      id: 'membership-1',
+      userId: 'tenant-user-1',
+      landlordId: 'landlord-1',
+    } as any);
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+    prismaMock.user.update.mockResolvedValue({ id: 'tenant-user-1' } as any);
+    prismaMock.tenantMembership.update.mockResolvedValue({
+      id: 'membership-1',
+      user: { id: 'tenant-user-1', name: 'Jane Smith', phone: null },
+      unit: { id: 'unit-1' },
+    } as any);
+    prismaMock.$transaction.mockImplementation(async (callback: any) => callback(prismaMock as any));
+
+    const res = await request(buildApp())
+      .patch('/api/tenants/membership-1/user-info')
+      .send(validEdit);
+
+    expect(res.status).toBe(200);
+    expect(prismaMock.user.update).toHaveBeenCalledWith({
+      where: { id: 'tenant-user-1' },
+      data: {
+        firstName: 'Jane',
+        lastName: 'Smith',
+        name: 'Jane Smith',
+        phone: null,
+      },
+    });
+    expect(prismaMock.tenantMembership.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'membership-1' },
+      data: expect.objectContaining({
+        leaseStartDate: new Date('2026-01-01T12:00:00'),
+        leaseEndDate: null,
+        leaseType: 'MONTH_TO_MONTH',
+        rentDeposit: null,
+        dateOfBirth: null,
+        emergencyContactName: null,
+        emergencyContactPhone: null,
+        notes: null,
+      }),
+      include: { user: true, unit: true },
+    }));
+    expect(res.body.data.user.name).toBe('Jane Smith');
+  });
+
+  it('rejects invalid lease dates before updating tenant information', async () => {
+    const res = await request(buildApp())
+      .patch('/api/tenants/membership-1/user-info')
+      .send({ ...validEdit, leaseStartDate: '2026-02-30' });
+
+    expect(res.status).toBe(400);
+    expect(prismaMock.tenantMembership.findUnique).not.toHaveBeenCalled();
+    expect(prismaMock.user.update).not.toHaveBeenCalled();
+    expect(prismaMock.tenantMembership.update).not.toHaveBeenCalled();
+  });
+
+  it('does not update a tenant membership owned by another landlord', async () => {
+    prismaMock.tenantMembership.findUnique.mockResolvedValue({
+      id: 'membership-1',
+      userId: 'tenant-user-1',
+      landlordId: 'landlord-2',
+    } as any);
+    prismaMock.landlordAccount.findUnique.mockResolvedValue({
+      id: 'landlord-1',
+      userId: mockUser.id,
+    } as any);
+
+    const res = await request(buildApp())
+      .patch('/api/tenants/membership-1/user-info')
+      .send(validEdit);
+
+    expect(res.status).toBe(403);
+    expect(prismaMock.user.update).not.toHaveBeenCalled();
+    expect(prismaMock.tenantMembership.update).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/tenants/transfer', () => {
   const oldMembership = {
     id: 'membership-1',

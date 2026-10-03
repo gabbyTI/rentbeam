@@ -620,11 +620,61 @@ router.get('/:id', catchAsync(async (req: AuthRequest, res) => {
 router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
   const user = req.user!;
   const { id } = req.params as { id: string };
-  const { firstName, lastName, phone } = req.body;
+  const {
+    firstName, lastName, phone,
+    leaseStartDate, leaseEndDate, leaseType, rentDeposit, dateOfBirth,
+    emergencyContactName, emergencyContactPhone, notes,
+  } = req.body;
 
-  // Validate at least one field is provided
-  if (!firstName && !lastName && phone === undefined) {
-    throw new ValidationError('At least one field (firstName, lastName, or phone) must be provided');
+  if (typeof firstName !== 'string' || !firstName.trim() || typeof lastName !== 'string' || !lastName.trim()) {
+    throw new ValidationError('First name and last name are required');
+  }
+  if (phone !== null && typeof phone !== 'string') {
+    throw new ValidationError('phone must be a string or null');
+  }
+  if (leaseType !== 'FIXED_TERM' && leaseType !== 'MONTH_TO_MONTH') {
+    throw new ValidationError('leaseType must be FIXED_TERM or MONTH_TO_MONTH');
+  }
+
+  const parseOptionalDate = (value: unknown, field: string): Date | null => {
+    if (value === null || value === '') return null;
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new ValidationError(`${field} must be a valid date or null`);
+    }
+
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      throw new ValidationError(`${field} must be a valid date or null`);
+    }
+
+    return new Date(`${value}T12:00:00`);
+  };
+
+  const parsedLeaseStartDate = parseOptionalDate(leaseStartDate, 'leaseStartDate');
+  const parsedLeaseEndDate = parseOptionalDate(leaseEndDate, 'leaseEndDate');
+  const parsedDateOfBirth = parseOptionalDate(dateOfBirth, 'dateOfBirth');
+  if (
+    parsedLeaseStartDate &&
+    parsedLeaseEndDate &&
+    parsedLeaseEndDate < parsedLeaseStartDate
+  ) {
+    throw new ValidationError('leaseEndDate cannot be before leaseStartDate');
+  }
+
+  const parsedRentDeposit = rentDeposit === null ? null : Number(rentDeposit);
+  if (parsedRentDeposit !== null && (!Number.isFinite(parsedRentDeposit) || parsedRentDeposit < 0)) {
+    throw new ValidationError('rentDeposit must be zero or a positive number');
+  }
+
+  for (const [field, value] of Object.entries({ emergencyContactName, emergencyContactPhone, notes })) {
+    if (value !== null && typeof value !== 'string') {
+      throw new ValidationError(`${field} must be a string or null`);
+    }
   }
 
   // Fetch tenant membership
@@ -648,35 +698,42 @@ router.patch('/:id/user-info', catchAsync(async (req: AuthRequest, res) => {
     throw new ForbiddenError('Not authorized to update this tenant');
   }
 
-  // Update user information
-  // Note: Login email (user.email) cannot be changed as it's tied to Cognito username
-  // notificationEmail can only be changed by the tenant themselves (with verification)
-  const updateData: any = {};
+  // Login and notification emails remain managed through their existing account flows.
+  const updatedMembership = await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: membership.userId },
+      data: {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        name: `${firstName.trim()} ${lastName.trim()}`,
+        phone: phone?.trim() || null,
+      },
+    });
 
-  // Get current values for computing name
-  const currentFirstName = firstName || membership.user.firstName;
-  const currentLastName = lastName || membership.user.lastName;
-
-  if (firstName) updateData.firstName = firstName;
-  if (lastName) updateData.lastName = lastName;
-  if (firstName || lastName) {
-    updateData.name = `${currentFirstName} ${currentLastName}`;
-  }
-  if (phone !== undefined) updateData.phone = phone || null; // Allow clearing phone
-
-  const updatedUser = await prisma.user.update({
-    where: { id: membership.userId },
-    data: updateData
+    return tx.tenantMembership.update({
+      where: { id },
+      data: {
+        leaseStartDate: parsedLeaseStartDate,
+        leaseEndDate: parsedLeaseEndDate,
+        leaseType,
+        rentDeposit: parsedRentDeposit,
+        dateOfBirth: parsedDateOfBirth,
+        emergencyContactName: emergencyContactName?.trim() || null,
+        emergencyContactPhone: emergencyContactPhone?.trim() || null,
+        notes: notes?.trim() || null,
+      },
+      include: { user: true, unit: true },
+    });
   });
 
   logger.info({
     tenantMembershipId: id,
     userId: membership.userId,
     landlordId: landlord.id,
-    updatedFields: Object.keys(updateData)
-  }, 'Landlord updated tenant user information');
+    updatedFields: ['firstName', 'lastName', 'phone', 'leaseStartDate', 'leaseEndDate', 'leaseType', 'rentDeposit', 'dateOfBirth', 'emergencyContactName', 'emergencyContactPhone', 'notes'],
+  }, 'Landlord updated tenant details');
 
-  res.json(apiResponse(updatedUser, 'Tenant information updated successfully'));
+  res.json(apiResponse(updatedMembership, 'Tenant details updated successfully'));
 }));
 
 // PATCH /api/tenants/:id
