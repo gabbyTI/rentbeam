@@ -8,6 +8,8 @@ const TENANT_EMAIL = 'tenant.demo@rentbeam.local';
 const TEST_PASSWORD = 'DemoPass123!';
 
 async function resetData() {
+  await prisma.unitRecurringChargeRule.deleteMany();
+  await prisma.recurringChargeType.deleteMany();
   await prisma.ledgerEntry.deleteMany();
   await prisma.payment.deleteMany();
   await prisma.tenantDocument.deleteMany();
@@ -34,6 +36,19 @@ async function ensureCognitoUser(email: string, password: string, name: string) 
 
 async function main() {
   await resetData();
+
+  const seedChargeTypes = [
+    { code: 'PARKING', name: 'Parking', description: 'Assigned parking spot' },
+    { code: 'STORAGE', name: 'Storage', description: 'Storage unit or locker' },
+    { code: 'PET', name: 'Pet Fee', description: 'Pet rent or pet-related charge' },
+    { code: 'UTILITY', name: 'Utility', description: 'Utility or service charge' },
+    { code: 'OTHER', name: 'Other', description: 'Custom recurring charge' },
+  ];
+
+  await prisma.recurringChargeType.createMany({
+    data: seedChargeTypes,
+    skipDuplicates: true,
+  });
 
   const landlordCognitoId = await ensureCognitoUser(LANDLORD_EMAIL, TEST_PASSWORD, 'Demo Landlord');
   const tenantCognitoId = await ensureCognitoUser(TENANT_EMAIL, TEST_PASSWORD, 'Demo Tenant');

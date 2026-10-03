@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import axios from 'axios';
 import logger from '../lib/logger.js';
 import { postMonthlyRentCharges } from './rentCharges.js';
+import { processRecurringChargesForToday } from './recurringCharges.js';
 
 /**
  * Initialize cron jobs
@@ -29,6 +30,17 @@ export function initializeScheduler() {
       logger.info({ result }, 'Cron: Rent charge posting complete');
     } catch (error: any) {
       logger.error({ error: error.message }, 'Cron: Rent charge posting failed');
+    }
+  });
+
+  // Generate recurring unit charges at the same time as monthly rent charges.
+  const recurringChargeJob = cron.schedule('0 0 * * *', async () => {
+    logger.info('Cron: Processing recurring unit charges');
+    try {
+      const result = await processRecurringChargesForToday();
+      logger.info({ result }, 'Cron: Recurring charge generation complete');
+    } catch (error: any) {
+      logger.error({ error: error.message }, 'Cron: Recurring charge generation failed');
     }
   });
 
@@ -119,8 +131,8 @@ export function initializeScheduler() {
     }
   });
 
-  logger.info('Cron jobs scheduled: rent charges at 00:00, autopay at 00:05 and 10:00, reminders at 09:00 daily');
+  logger.info('Cron jobs scheduled: rent charges at 00:00, recurring charges at 00:00, autopay at 00:05 and 10:00, reminders at 09:00 daily');
 
   // Return jobs for potential cleanup on shutdown
-  return { autopayJob, retryJob, reminderJob, rentChargeJob };
+  return { autopayJob, retryJob, reminderJob, rentChargeJob, recurringChargeJob };
 }

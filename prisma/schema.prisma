@@ -81,10 +81,53 @@ model Unit {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  tenantMemberships TenantMembership[]
+  tenantMemberships       TenantMembership[]
+  recurringChargeRules    UnitRecurringChargeRule[]
 
   @@index([propertyId])
   @@map("units")
+}
+
+enum RecurringChargeFrequency {
+  MONTHLY
+  WEEKLY
+}
+
+model RecurringChargeType {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rules UnitRecurringChargeRule[]
+
+  @@map("recurring_charge_types")
+}
+
+model UnitRecurringChargeRule {
+  id               String                    @id @default(uuid())
+  unitId           String
+  unit             Unit                      @relation(fields: [unitId], references: [id], onDelete: Cascade)
+  chargeTypeId     String
+  chargeType       RecurringChargeType       @relation(fields: [chargeTypeId], references: [id], onDelete: Cascade)
+  amount           Decimal                   @db.Decimal(10, 2)
+  frequency        RecurringChargeFrequency  @default(MONTHLY)
+  dueDay           Int                      @default(1)
+  effectiveDate    DateTime
+  endDate          DateTime?
+  active           Boolean                  @default(true)
+  description      String?
+  lastGeneratedAt  DateTime?
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+
+  @@index([unitId])
+  @@index([chargeTypeId])
+  @@index([active, effectiveDate])
+  @@map("unit_recurring_charge_rules")
 }
 
 model TenantMembership {
